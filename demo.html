@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoTrack – Véhicules LeBonCoin en Temps Réel</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap');
+:root{
+  --bg:#0a0b0f;--surface:#13151b;--surface-light:#1a1d26;--surface-hover:#222733;
+  --border:rgba(255,255,255,.08);--border-focus:rgba(0,212,255,.4);
+  --primary:#00d4ff;--primary-dark:#00a8cc;--primary-glow:rgba(0,212,255,.15);
+  --accent:#ff6b6b;--success:#51cf66;--warning:#ffd43b;
+  --text:#fff;--text-secondary:#a0a4ab;--text-tertiary:#6b7280;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);line-height:1.6;overflow-x:hidden}
+
+/* NAVBAR */
+.navbar{position:fixed;top:0;left:0;right:0;z-index:1000;background:rgba(10,11,15,.93);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:.85rem 0;transition:box-shadow .3s}
+.navbar-container{max-width:1400px;margin:0 auto;padding:0 2rem;display:flex;align-items:center;justify-content:space-between}
+.logo{display:flex;align-items:center;gap:.6rem;font-weight:800;font-size:21px;color:var(--text);text-decoration:none;cursor:pointer}
+.logo-icon{width:32px;height:32px;background:linear-gradient(135deg,var(--primary),var(--primary-dark));border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--bg);font-size:16px}
+.logo-accent{color:var(--primary)}
+.nav-links{display:flex;gap:1rem;list-style:none;align-items:center}
+.nav-link{color:var(--text-secondary);text-decoration:none;font-weight:500;transition:color .25s;cursor:pointer;background:none;border:none;font-family:inherit;font-size:inherit;padding:.25rem 0}
+.nav-link:hover{color:var(--text)}.nav-link.active{color:var(--primary)}
+.btn-nav{padding:.45rem 1.1rem;border-radius:8px;font-weight:600;border:none;cursor:pointer;font-family:inherit;font-size:13px;transition:all .25s}
+.btn-primary-nav{background:linear-gradient(135deg,var(--primary),var(--primary-dark));color:var(--bg);box-shadow:0 4px 14px var(--primary-glow)}
+.btn-primary-nav:hover{transform:translateY(-1px);box-shadow:0 6px 18px var(--primary-glow)}
+.btn-ghost{background:transparent;color:var(--text);border:1px solid var(--border)}
+.btn-ghost:hover{background:var(--surface-light);border-color:var(--border-focus)}
+
+/* LOADING SKELETON */
+.skeleton{background:linear-gradient(90deg,var(--surface) 25%,var(--surface-light) 50%,var(--surface) 75%);background-size:200% 100%;animation:loading 1.5s infinite}
+@keyframes loading{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.skeleton-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;overflow:hidden;height:380px}
+.skeleton-img{width:100%;height:195px;background:var(--surface-light)}
+.skeleton-content{padding:1.15rem}
+.skeleton-title{height:20px;background:var(--surface-light);border-radius:4px;margin-bottom:.6rem}
+.skeleton-text{height:14px;background:var(--surface-light);border-radius:4px;margin-bottom:.4rem;width:70%}
+.skeleton-price{height:24px;background:var(--surface-light);border-radius:4px;width:40%;margin-top:1rem}
+
+/* PAGES */
+.page{display:none;min-height:100vh}.page.active{display:block}
+
+/* HERO */
+.hero{position:relative;min-height:100vh;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:120px 2rem 4rem}
+.hero-bg{position:absolute;inset:0;opacity:.4}
+.hero-grid{position:absolute;inset:0;background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);background-size:50px 50px;animation:gridMove 20s linear infinite}
+@keyframes gridMove{to{transform:translate(50px,50px)}}
+.hero-gradient{position:absolute;width:800px;height:800px;background:radial-gradient(circle,var(--primary-glow) 0%,transparent 70%);animation:floatG 8s ease-in-out infinite}
+@keyframes floatG{0%,100%{transform:translate(-50%,-50%) translateY(0)}50%{transform:translate(-50%,-50%) translateY(-28px)}}
+.hero-content{position:relative;z-index:1;max-width:1100px;text-align:center}
+.hero-badge{display:inline-flex;align-items:center;gap:.5rem;padding:.45rem .9rem;background:var(--surface);border:1px solid var(--border);border-radius:50px;font-size:13px;margin-bottom:1.8rem;animation:fadeUp .6s ease-out}
+@keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
+.hero-title{font-size:clamp(2.4rem,5.5vw,4.6rem);font-weight:800;line-height:1.1;margin-bottom:1.2rem;animation:fadeUp .8s .2s both}
+.title-gradient{background:linear-gradient(135deg,var(--primary),#00fff7);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hero-desc{font-size:1.15rem;color:var(--text-secondary);max-width:580px;margin:0 auto 2.2rem;animation:fadeUp .8s .4s both}
+.hero-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1.2rem;max-width:720px;margin:0 auto 2.2rem;animation:fadeUp .8s .6s both}
+.stat-item{padding:1.1rem;background:var(--surface);border:1px solid var(--border);border-radius:14px;transition:all .3s}
+.stat-item:hover{transform:translateY(-3px);border-color:var(--primary)}
+.stat-value{font-size:1.7rem;font-weight:800;color:var(--primary)}
+.stat-label{font-size:.8rem;color:var(--text-secondary)}
+.hero-cta{display:flex;gap:.9rem;justify-content:center;flex-wrap:wrap;animation:fadeUp .8s .8s both}
+.btn-hero{display:inline-flex;align-items:center;gap:.55rem;padding:.85rem 1.7rem;border-radius:12px;font-weight:600;font-size:1rem;border:none;cursor:pointer;font-family:inherit;transition:all .25s}
+.btn-hero.primary{background:linear-gradient(135deg,var(--primary),var(--primary-dark));color:var(--bg);box-shadow:0 8px 26px var(--primary-glow)}
+.btn-hero.primary:hover{transform:translateY(-2px);box-shadow:0 12px 30px var(--primary-glow)}
+.btn-hero.secondary{background:var(--surface-light);color:var(--text);border:1px solid var(--border)}
+.btn-hero.secondary:hover{border-color:var(--primary)}
+
+/* PREVIEW */
+.preview-section{padding:4.5rem 2rem 3.5rem;max-width:1150px;margin:0 auto}
+.section-header{text-align:center;margin-bottom:2rem}
+.section-header h2{font-size:2rem;font-weight:800;margin-bottom:.35rem}
+.section-header p{color:var(--text-secondary);font-size:.95rem}
+.live-badge{display:inline-flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--success);margin-top:.5rem}
+.live-dot{width:8px;height:8px;background:var(--success);border-radius:50%;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.preview-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:1.4rem}
+
+/* VEHICLE CARD */
+.vehicle-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;overflow:hidden;transition:all .3s;position:relative}
+.vehicle-card:hover{transform:translateY(-5px);border-color:var(--primary);box-shadow:0 10px 32px rgba(0,212,255,.13)}
+.vehicle-card.clickable:hover::after{content:"🔗";position:absolute;top:1rem;right:1rem;font-size:1.2rem;opacity:.7;animation:bounce .5s}
+@keyframes bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+.vehicle-card.blurred .vehicle-content{filter:blur(5px);pointer-events:none}
+.vehicle-card.blurred .vehicle-image{filter:blur(2px)}
+.blur-overlay{display:none;position:absolute;inset:0;z-index:2;background:linear-gradient(to bottom,transparent 30%,rgba(10,11,15,.93));border-radius:16px;align-items:flex-end;justify-content:center;padding-bottom:1.8rem}
+.vehicle-card.blurred .blur-overlay{display:flex}
+.blur-btn{padding:.55rem 1.3rem;background:linear-gradient(135deg,var(--primary),var(--primary-dark));color:var(--bg);border:none;border-radius:8px;font-weight:700;font-size:.85rem;cursor:pointer;font-family:inherit;box-shadow:0 4px 14px var(--primary-glow);transition:all .25s}
+.blur-btn:hover{transform:translateY(-2px)}
+.vehicle-image{position:relative;width:100%;height:195px;background:var(--surface-light);overflow:hidden}
+.vehicle-image img{width:100%;height:100%;object-fit:cover}
+.vehicle-image .no-img{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-tertiary);font-size:2.5rem}
+.vehicle-badges{position:absolute;top:.75rem;left:.75rem;display:flex;gap:.35rem}
+.badge{padding:.2rem .6rem;border-radius:5px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.3px}
+.badge-new{background:var(--primary-glow);color:var(--primary)}
+.badge-hot{background:rgba(255,107,107,.15);color:var(--accent)}
+.badge-pro{background:rgba(255,211,59,.12);color:var(--warning)}
+.vehicle-content{padding:1.15rem}
+.vehicle-title{font-size:1.05rem;font-weight:700;margin-bottom:.4rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vehicle-meta{display:flex;gap:.45rem;color:var(--text-secondary);font-size:.8rem;margin-bottom:.35rem;flex-wrap:wrap}
+.vehicle-location{display:flex;align-items:center;gap:.3rem;color:var(--text-tertiary);font-size:.8rem;margin-bottom:.75rem}
+.vehicle-location svg{width:13px;height:13px;flex-shrink:0}
+.vehicle-footer{display:flex;align-items:center;justify-content:space-between}
+.vehicle-price{font-size:1.3rem;font-weight:800;color:var(--primary)}
+.vehicle-price.locked{color:var(--text-tertiary);font-size:1rem;font-weight:600}
+.score-wrap{display:flex;align-items:center;gap:.35rem}
+.score-bar{width:48px;height:5px;background:var(--surface-light);border-radius:3px;overflow:hidden}
+.score-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--success),var(--primary))}
+.score-txt{font-size:.75rem;font-weight:600;color:var(--text-secondary)}
+
+/* PAGINATION */
+.pagination{display:flex;gap:.5rem;justify-content:center;margin-top:2rem;flex-wrap:wrap}
+.pagination button{padding:.5rem 1rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:500;cursor:pointer;transition:all .25s;font-family:inherit;font-size:.9rem}
+.pagination button:hover:not(:disabled){background:var(--surface-light);border-color:var(--primary)}
+.pagination button.active{background:linear-gradient(135deg,var(--primary),var(--primary-dark));border-color:var(--primary);color:var(--bg)}
+.pagination button:disabled{opacity:.4;cursor:not-allowed}
+.pagination span{padding:.5rem;color:var(--text-tertiary)}
+
+/* SEARCH */
+.search-section{padding:6.5rem 2rem 3rem;max-width:1400px;margin:0 auto}
+.search-card{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:2rem;margin-bottom:2.5rem}
+.search-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.8rem;flex-wrap:wrap;gap:1rem}
+.search-header h2{font-size:1.8rem;font-weight:800}
+.filters-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1.5rem}
+.filter-group{display:flex;flex-direction:column;gap:.4rem}
+.filter-group label{font-size:.8rem;font-weight:600;color:var(--text-secondary)}
+.filter-group input,.filter-group select{padding:.6rem .85rem;background:var(--surface-light);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:.9rem;transition:all .25s}
+.filter-group input:focus,.filter-group select:focus{outline:none;border-color:var(--border-focus);box-shadow:0 0 0 3px var(--primary-glow)}
+.filter-actions{display:flex;gap:.8rem;flex-wrap:wrap}
+.btn-filter{padding:.6rem 1.3rem;border-radius:8px;font-weight:600;cursor:pointer;font-family:inherit;font-size:.9rem;transition:all .25s;border:none}
+.btn-apply{background:linear-gradient(135deg,var(--primary),var(--primary-dark));color:var(--bg);box-shadow:0 4px 14px var(--primary-glow)}
+.btn-apply:hover{transform:translateY(-1px)}
+.btn-reset{background:var(--surface-light);color:var(--text);border:1px solid var(--border)}
+.btn-reset:hover{border-color:var(--accent)}
+.active-filters{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem}
+.chip{display:inline-flex;align-items:center;gap:.4rem;padding:.35rem .75rem;background:var(--surface-light);border:1px solid var(--border);border-radius:20px;font-size:.8rem;color:var(--text-secondary)}
+.chip-remove{background:none;border:none;color:var(--accent);cursor:pointer;font-size:1.1rem;padding:0;margin-left:.2rem;transition:transform .2s}
+.chip-remove:hover{transform:scale(1.2)}
+.results-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:1rem}
+.results-count{font-size:.9rem;color:var(--text-secondary)}
+.sort-select{padding:.5rem .9rem;background:var(--surface-light);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:.85rem}
+.no-results{text-align:center;padding:3rem 1rem;background:var(--surface);border:1px solid var(--border);border-radius:16px}
+.no-results h3{margin-bottom:.5rem;color:var(--text)}
+.no-results p{color:var(--text-secondary)}
+
+/* PRICING */
+.pricing-section{padding:6.5rem 2rem 4rem;max-width:1200px;margin:0 auto}
+.pricing-header{text-align:center;margin-bottom:3rem}
+.pricing-header h2{font-size:2.5rem;font-weight:800;margin-bottom:.8rem}
+.pricing-header p{color:var(--text-secondary);font-size:1.05rem}
+.pricing-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1.8rem}
+.pricing-card{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:2rem;transition:all .3s;position:relative}
+.pricing-card:hover{transform:translateY(-5px);border-color:var(--primary)}
+.pricing-card.highlighted{border-color:var(--primary);box-shadow:0 0 30px var(--primary-glow)}
+.popular-badge{position:absolute;top:-12px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,var(--primary),var(--primary-dark));padding:.35rem 1rem;border-radius:20px;font-size:.75rem;font-weight:700;box-shadow:0 4px 12px var(--primary-glow)}
+.plan-name{font-size:1.5rem;font-weight:800;margin-bottom:.4rem}
+.plan-desc{color:var(--text-secondary);font-size:.85rem;margin-bottom:1.5rem}
+.plan-price{font-size:2.5rem;font-weight:800;color:var(--primary);margin-bottom:1.8rem}
+.plan-price span{font-size:.9rem;color:var(--text-secondary);font-weight:500}
+.plan-features{list-style:none;margin-bottom:2rem}
+.plan-features li{display:flex;align-items:center;gap:.6rem;padding:.55rem 0;color:var(--text-secondary);font-size:.9rem}
+.plan-features svg{width:18px;height:18px;color:var(--primary);flex-shrink:0}
+.plan-cta{width:100%;padding:.75rem;border-radius:10px;font-weight:700;font-size:1rem;cursor:pointer;font-family:inherit;transition:all .25s;border:none}
+.plan-cta.primary{background:linear-gradient(135deg,var(--primary),var(--primary-dark));color:var(--bg);box-shadow:0 4px 14px var(--primary-glow)}
+.plan-cta.primary:hover{transform:translateY(-2px)}
+.plan-cta.secondary{background:var(--surface-light);color:var(--text);border:1px solid var(--border)}
+.plan-cta.secondary:hover{border-color:var(--primary)}
+
+/* MODAL */
+.modal{display:none;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.75);backdrop-filter:blur(8px);align-items:center;justify-content:center;padding:2rem;animation:fadeIn .3s}
+.modal.active{display:flex}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal-content{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:2rem;max-width:450px;width:100%;position:relative;animation:slideUp .4s}
+@keyframes slideUp{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:translateY(0)}}
+.modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem}
+.modal-title{font-size:1.4rem;font-weight:800}
+.modal-close{background:none;border:none;color:var(--text-secondary);font-size:1.8rem;cursor:pointer;padding:0;width:30px;height:30px;display:flex;align-items:center;justify-content:center;transition:color .25s}
+.modal-close:hover{color:var(--text)}
+.form-group{margin-bottom:1.2rem}
+.form-group label{display:block;margin-bottom:.4rem;font-weight:600;font-size:.85rem;color:var(--text-secondary)}
+.form-group input{width:100%;padding:.7rem;background:var(--surface-light);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:.95rem;transition:all .25s}
+.form-group input:focus{outline:none;border-color:var(--border-focus);box-shadow:0 0 0 3px var(--primary-glow)}
+.btn-submit{width:100%;padding:.8rem;background:linear-gradient(135deg,var(--primary),var(--primary-dark));color:var(--bg);border:none;border-radius:10px;font-weight:700;font-size:1rem;cursor:pointer;font-family:inherit;transition:all .25s;box-shadow:0 4px 14px var(--primary-glow)}
+.btn-submit:hover{transform:translateY(-2px)}
+.form-footer{text-align:center;margin-top:1rem;font-size:.85rem;color:var(--text-secondary)}
+.form-footer a{color:var(--primary);text-decoration:none;cursor:pointer}
+.form-footer a:hover{text-decoration:underline}
+
+/* NOTIFICATION */
+.notification{position:fixed;top:100px;right:2rem;z-index:3000;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1rem 1.5rem;box-shadow:0 10px 30px rgba(0,0,0,.4);display:none;align-items:center;gap:.8rem;animation:slideInRight .4s}
+.notification.active{display:flex}
+@keyframes slideInRight{from{opacity:0;transform:translateX(100px)}to{opacity:1;transform:translateX(0)}}
+.notification-icon{font-size:1.4rem}
+.notification-message{font-weight:500;font-size:.9rem}
+.notification.success{border-left:3px solid var(--success)}
+.notification.error{border-left:3px solid var(--accent)}
+.notification.info{border-left:3px solid var(--primary)}
+</style>
+</head>
+<body>
+
+<!-- NAVBAR -->
+<nav id="navbar" class="navbar">
+<div class="navbar-container">
+<a class="logo" onclick="showPage('home')">
+<div class="logo-icon">🚗</div>
+<span>Auto<span class="logo-accent">Track</span></span>
+</a>
+<ul class="nav-links">
+<li><a class="nav-link" onclick="showPage('home')">Accueil</a></li>
+<li><a class="nav-link" onclick="showPage('search')">Rechercher</a></li>
+<li><a class="nav-link" onclick="showPage('pricing')">Tarifs</a></li>
+<li><button class="btn-nav btn-ghost" id="authBtn" onclick="showLogin()">Connexion</button></li>
+<li><button class="btn-nav btn-primary-nav" onclick="showRegister()">S'inscrire</button></li>
+</ul>
+</div>
+</nav>
+
+<!-- NOTIFICATION -->
+<div id="notification" class="notification">
+<div class="notification-icon" id="notifIcon">✓</div>
+<div class="notification-message" id="notifMessage"></div>
+</div>
+
+<!-- HOME PAGE -->
+<div id="homePage" class="page active">
+<section class="hero">
+<div class="hero-bg">
+<div class="hero-grid"></div>
+<div class="hero-gradient" style="top:20%;left:50%"></div>
+</div>
+<div class="hero-content">
+<div class="hero-badge">
+<span>⚡</span>
+<span>Détection Ultra-Rapide - Nouvelles Annonces en Temps Réel</span>
+</div>
+<h1 class="hero-title">
+Trouvez la <span class="title-gradient">voiture parfaite</span><br>avant tout le monde
+</h1>
+<p class="hero-desc">
+Monitoring 24/7 des annonces LeBonCoin. Soyez alerté instantanément des nouvelles offres qui correspondent à vos critères.
+</p>
+<div class="hero-stats">
+<div class="stat-item">
+<div class="stat-value" id="statVehicles">-</div>
+<div class="stat-label">Annonces actives</div>
+</div>
+<div class="stat-item">
+<div class="stat-value">< 3min</div>
+<div class="stat-label">Détection moyenne</div>
+</div>
+<div class="stat-item">
+<div class="stat-value">24/7</div>
+<div class="stat-label">Surveillance</div>
+</div>
+</div>
+<div class="hero-cta">
+<button class="btn-hero primary" onclick="showRegister()">
+<span>Commencer Gratuitement</span>
+<span>→</span>
+</button>
+<button class="btn-hero secondary" onclick="showPage('search')">
+<span>Voir les Annonces</span>
+</button>
+</div>
+</div>
+</section>
+
+<section class="preview-section">
+<div class="section-header">
+<h2>Dernières Annonces</h2>
+<p>Mises à jour en temps réel</p>
+<div class="live-badge">
+<div class="live-dot"></div>
+<span>Live</span>
+</div>
+</div>
+<div id="previewGrid" class="preview-grid">
+<!-- Skeletons de chargement -->
+<div class="skeleton-card"><div class="skeleton skeleton-img"></div><div class="skeleton-content"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text"></div><div class="skeleton skeleton-price"></div></div></div>
+<div class="skeleton-card"><div class="skeleton skeleton-img"></div><div class="skeleton-content"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text"></div><div class="skeleton skeleton-price"></div></div></div>
+<div class="skeleton-card"><div class="skeleton skeleton-img"></div><div class="skeleton-content"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text"></div><div class="skeleton skeleton-price"></div></div></div>
+</div>
+</section>
+</div>
+
+<!-- SEARCH PAGE -->
+<div id="searchPage" class="page">
+<section class="search-section">
+<div class="search-card">
+<div class="search-header">
+<h2>🔍 Recherche Avancée</h2>
+</div>
+<div class="filters-grid">
+<div class="filter-group">
+<label>Marque</label>
+<input type="text" id="f-brand" placeholder="ex: Renault">
+</div>
+<div class="filter-group">
+<label>Modèle</label>
+<input type="text" id="f-model" placeholder="ex: Clio">
+</div>
+<div class="filter-group">
+<label>Lieu</label>
+<input type="text" id="f-location" placeholder="ex: Paris">
+</div>
+<div class="filter-group">
+<label>Prix min (€)</label>
+<input type="number" id="f-price-min" placeholder="0">
+</div>
+<div class="filter-group">
+<label>Prix max (€)</label>
+<input type="number" id="f-price-max" placeholder="50000">
+</div>
+<div class="filter-group">
+<label>Année min</label>
+<input type="number" id="f-year-min" placeholder="2015">
+</div>
+<div class="filter-group">
+<label>Année max</label>
+<input type="number" id="f-year-max" placeholder="2024">
+</div>
+<div class="filter-group">
+<label>Km max</label>
+<input type="number" id="f-mileage" placeholder="100000">
+</div>
+<div class="filter-group">
+<label>Carburant</label>
+<select id="f-fuel">
+<option value="">Tous</option>
+<option value="essence">Essence</option>
+<option value="diesel">Diesel</option>
+<option value="électrique">Électrique</option>
+<option value="hybride">Hybride</option>
+</select>
+</div>
+<div class="filter-group">
+<label>Boîte</label>
+<select id="f-gearbox">
+<option value="">Toutes</option>
+<option value="manuelle">Manuelle</option>
+<option value="automatique">Automatique</option>
+</select>
+</div>
+<div class="filter-group">
+<label>Score min</label>
+<input type="number" id="f-score" placeholder="0" min="0" max="100">
+</div>
+</div>
+<div id="activeFilters" class="active-filters"></div>
+<div class="filter-actions">
+<button class="btn-filter btn-apply" onclick="applyFilters()">🔍 Rechercher</button>
+<button class="btn-filter btn-reset" onclick="resetFilters()">✖ Réinitialiser</button>
+</div>
+</div>
+
+<div class="results-header">
+<div class="results-count" id="resultsCount">Chargement...</div>
+<select id="sortSelect" class="sort-select" onchange="applyFilters()">
+<option value="recent">Plus récent</option>
+<option value="price_asc">Prix croissant</option>
+<option value="price_desc">Prix décroissant</option>
+<option value="score">Meilleur score</option>
+</select>
+</div>
+
+<div id="resultsGrid" class="preview-grid">
+<!-- Skeletons -->
+<div class="skeleton-card"><div class="skeleton skeleton-img"></div><div class="skeleton-content"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text"></div><div class="skeleton skeleton-price"></div></div></div>
+<div class="skeleton-card"><div class="skeleton skeleton-img"></div><div class="skeleton-content"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text"></div><div class="skeleton skeleton-price"></div></div></div>
+</div>
+
+<div id="pagination" class="pagination"></div>
+</section>
+</div>
+
+<!-- PRICING PAGE -->
+<div id="pricingPage" class="page">
+<section class="pricing-section">
+<div class="pricing-header">
+<h2>Choisissez votre Plan</h2>
+<p>Tous les plans incluent l'accès au monitoring en temps réel</p>
+</div>
+<div id="pricingGrid" class="pricing-grid"></div>
+</section>
+</div>
+
+<!-- MODAL -->
+<div id="modal" class="modal">
+<div class="modal-content">
+<div class="modal-header">
+<h3 class="modal-title" id="modalTitle">Connexion</h3>
+<button class="modal-close" onclick="closeModal()">×</button>
+</div>
+<div id="modalBody"></div>
+</div>
+</div>
+
+<script>
+// ========== CONFIG ==========
+const API = "http://localhost:8001";
+let isLoggedIn = false;
+let currentUser = {email:"",sub:"gratuit"};
+let currentSearchPage = 1;
+let totalPages = 1;
+let chipClears = [];
+
+// ========== WebSocket pour temps réel ==========
+let ws = null;
+let wsReconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+
+function connectWebSocket() {
+  try {
+    ws = new WebSocket("ws://localhost:8001/ws");
+    
+    ws.onopen = () => {
+      console.log("⚡ WebSocket connecté - Notifications temps réel activées");
+      wsReconnectAttempts = 0;
+    };
+    
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === "new_vehicle") {
+        notify("🆕 Nouvelle annonce détectée !", "info");
+        // Rafraîchir automatiquement si on est sur la page d'accueil
+        if (document.getElementById("homePage").classList.contains("active")) {
+          fetchPreview();
+        }
+      }
+    };
+    
+    ws.onerror = (error) => {
+      console.error("❌ Erreur WebSocket:", error);
+    };
+    
+    ws.onclose = () => {
+      console.log("🔌 WebSocket déconnecté");
+      // Tentative de reconnexion
+      if (wsReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        wsReconnectAttempts++;
+        setTimeout(connectWebSocket, 3000 * wsReconnectAttempts);
+      }
+    };
+  } catch (error) {
+    console.error("❌ Impossible de se connecter au WebSocket:", error);
+  }
+}
+
+// Démarrer WebSocket au chargement
+connectWebSocket();
+
+// ========== NAVIGATION ==========
+function showPage(p){
+  document.querySelectorAll(".page").forEach(pg=>pg.classList.remove("active"));
+  document.querySelectorAll(".nav-link").forEach(l=>l.classList.remove("active"));
+  document.getElementById(p+"Page").classList.add("active");
+  
+  if(p==="home"){
+    fetchPreview();
+    fetchStats();
+  }else if(p==="search"){
+    currentSearchPage=1;
+    applyFilters();
+  }else if(p==="pricing"){
+    renderPricing();
+  }
+}
+
+// ========== STATS (INSTANTANÉ) ==========
+async function fetchStats(){
+  try{
+    const r = await fetch(API+"/api/stats");
+    const d = await r.json();
+    document.getElementById("statVehicles").textContent = d.total_vehicles || 0;
+  }catch{
+    document.getElementById("statVehicles").textContent = "?";
+  }
+}
+
+// ========== PREVIEW (CHARGEMENT RAPIDE AVEC CACHE) ==========
+async function fetchPreview(){
+  const g = document.getElementById("previewGrid");
+  
+  try{
+    // ⚡ Requête ultra-rapide vers le cache
+    const r = await fetch(API+"/api/vehicles?limit=6");
+    const d = await r.json();
+    const veh = d.vehicles || [];
+    
+    if(veh.length === 0){
+      g.innerHTML = `<div class="no-results"><h3>Aucune annonce</h3><p>Le monitoring va bientôt démarrer...</p></div>`;
+      return;
+    }
+    
+    g.innerHTML = veh.map(v => {
+      const canView = isLoggedIn && currentUser.sub !== "gratuit";
+      const idx = veh.indexOf(v);
+      const shouldBlur = !isLoggedIn && idx >= 3;
+      
+      return cardHTML(v, shouldBlur, canView);
+    }).join("");
+    
+  }catch{
+    g.innerHTML = `<div class="no-results"><h3>Erreur de connexion</h3><p>Le backend n'est pas accessible.</p></div>`;
+  }
+}
+
+// ========== CARD HTML ==========
+function cardHTML(v, blur = false, clickable = false){
+  const img = v.images && v.images.length > 0 ? v.images[0] : null;
+  const meta = [
+    v.year ? v.year : null,
+    v.mileage ? Number(v.mileage).toLocaleString() + " km" : null,
+    v.fuel ? v.fuel.charAt(0).toUpperCase() + v.fuel.slice(1) : null
+  ].filter(Boolean).join(" • ");
+  
+  const scoreWidth = v.score ? Math.min(v.score, 100) : 50;
+  
+  return `
+    <div class="vehicle-card ${blur?"blurred":""} ${clickable?"clickable":""}" ${clickable?`onclick="window.open('${v.link}','_blank')"`:""}>
+      ${blur?`<div class="blur-overlay"><button class="blur-btn" onclick="event.stopPropagation();showRegister()">🔓 Débloquer avec Premium</button></div>`:""}
+      <div class="vehicle-image">
+        ${img?`<img src="${img}" alt="${v.title}" loading="lazy">`: `<div class="no-img">🚗</div>`}
+        <div class="vehicle-badges">
+          ${v.score >= 75 ? '<span class="badge badge-hot">HOT</span>' : ''}
+          ${v.is_pro ? '<span class="badge badge-pro">PRO</span>' : '<span class="badge badge-new">PARTICULIER</span>'}
+        </div>
+      </div>
+      <div class="vehicle-content">
+        <h3 class="vehicle-title">${v.title}</h3>
+        ${meta?`<div class="vehicle-meta">${meta}</div>`:""}
+        ${v.location?`<div class="vehicle-location"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>${v.location}</div>`:""}
+        <div class="vehicle-footer">
+          <div class="vehicle-price ${blur?"locked":""}">${blur?"🔒 Premium":v.price ? Number(v.price).toLocaleString()+" €" : "Prix NC"}</div>
+          <div class="score-wrap">
+            <div class="score-bar"><div class="score-fill" style="width:${scoreWidth}%"></div></div>
+            <span class="score-txt">${v.score || 50}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ========== AUTH ==========
+function authHeaders(){
+  return isLoggedIn?{"Authorization":"Bearer fake-token"}:{}
+}
+
+function showLogin(){
+  document.getElementById("modalTitle").textContent="Connexion";
+  document.getElementById("modalBody").innerHTML=`
+    <form onsubmit="login(event)">
+      <div class="form-group"><label>Email</label><input type="email" required placeholder="votre@email.com"></div>
+      <div class="form-group"><label>Mot de passe</label><input type="password" required placeholder="••••••••"></div>
+      <button type="submit" class="btn-submit">Se connecter</button>
+      <div class="form-footer">Pas de compte ? <a onclick="closeModal();showRegister()">S'inscrire</a></div>
+    </form>
+  `;
+  openModal();
+}
+
+function showRegister(){
+  document.getElementById("modalTitle").textContent="Inscription";
+  document.getElementById("modalBody").innerHTML=`
+    <form onsubmit="register(event)">
+      <div class="form-group"><label>Email</label><input type="email" required placeholder="votre@email.com"></div>
+      <div class="form-group"><label>Mot de passe</label><input type="password" required placeholder="••••••••"></div>
+      <button type="submit" class="btn-submit">S'inscrire</button>
+      <div class="form-footer">Déjà un compte ? <a onclick="closeModal();showLogin()">Se connecter</a></div>
+    </form>
+  `;
+  openModal();
+}
+
+function login(e){
+  e.preventDefault();
+  isLoggedIn=true;
+  currentUser={email:e.target[0].value,sub:"gratuit"};
+  updateAuthUI();
+  closeModal();
+  notify("✅ Connecté avec succès !","success");
+  fetchPreview();
+}
+
+function register(e){
+  e.preventDefault();
+  isLoggedIn=true;
+  currentUser={email:e.target[0].value,sub:"gratuit"};
+  updateAuthUI();
+  closeModal();
+  notify("🎉 Compte créé avec succès !","success");
+  fetchPreview();
+}
+
+function logout(){
+  isLoggedIn=false;
+  currentUser={email:"",sub:"gratuit"};
+  updateAuthUI();
+  notify("👋 Déconnecté","info");
+  fetchPreview();
+}
+
+function updateAuthUI(){
+  const btn=document.getElementById("authBtn");
+  if(isLoggedIn){
+    btn.textContent=currentUser.email;
+    btn.onclick=logout;
+  }else{
+    btn.textContent="Connexion";
+    btn.onclick=showLogin;
+  }
+}
+
+// ========== MODAL ==========
+function openModal(){document.getElementById("modal").classList.add("active")}
+function closeModal(){document.getElementById("modal").classList.remove("active")}
+
+// ========== NOTIFICATION ==========
+function notify(msg,type="info"){
+  const n=document.getElementById("notification");
+  const icon=document.getElementById("notifIcon");
+  const message=document.getElementById("notifMessage");
+  
+  n.className="notification "+type+" active";
+  message.textContent=msg;
+  icon.textContent=type==="success"?"✓":type==="error"?"✖":"ℹ";
+  
+  setTimeout(()=>n.classList.remove("active"),4000);
+}
+
+// ========== SEARCH & FILTERS ==========
+async function applyFilters(){
+  const g = document.getElementById("resultsGrid");
+  
+  // Afficher des skeletons pendant le chargement
+  g.innerHTML = Array(6).fill().map(() => 
+    `<div class="skeleton-card"><div class="skeleton skeleton-img"></div><div class="skeleton-content"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text"></div><div class="skeleton skeleton-price"></div></div></div>`
+  ).join("");
+  
+  const vals = {
+    brand: document.getElementById("f-brand").value,
+    model: document.getElementById("f-model").value,
+    loc: document.getElementById("f-location").value,
+    pMin: document.getElementById("f-price-min").value,
+    pMax: document.getElementById("f-price-max").value,
+    yMin: document.getElementById("f-year-min").value,
+    yMax: document.getElementById("f-year-max").value,
+    mile: document.getElementById("f-mileage").value,
+    fuel: document.getElementById("f-fuel").value,
+    gear: document.getElementById("f-gearbox").value,
+    score: document.getElementById("f-score").value
+  };
+  
+  const p = new URLSearchParams();
+  p.set("page", currentSearchPage);
+  p.set("limit", 50);
+  p.set("sort", document.getElementById("sortSelect").value);
+  
+  if(vals.brand)p.set("brand",vals.brand);if(vals.model)p.set("model",vals.model);if(vals.loc)p.set("location",vals.loc);
+  if(vals.pMin)p.set("min_price",vals.pMin);if(vals.pMax)p.set("max_price",vals.pMax);
+  if(vals.yMin)p.set("min_year",vals.yMin);if(vals.yMax)p.set("max_year",vals.yMax);
+  if(vals.mile)p.set("max_mileage",vals.mile);if(vals.fuel)p.set("fuel",vals.fuel);
+  if(vals.gear)p.set("gearbox",vals.gear);if(vals.score)p.set("min_score",vals.score);
+  
+  renderChips(vals);
+  
+  try{
+    // ⚡ Requête rapide vers le cache
+    const r=await fetch(API+"/api/vehicles?"+p.toString(),{headers:authHeaders()});
+    const d=await r.json();
+    const veh=d.vehicles||[];
+    
+    totalPages = d.total_pages || 1;
+    
+    document.getElementById("resultsCount").innerHTML=`<strong>${d.total||0}</strong> annonce${d.total!==1?"s":""} (page ${currentSearchPage}/${totalPages})`;
+    
+    g.innerHTML=veh.length?veh.map(v=>cardHTML(v,false,true)).join(""):`<div class="no-results"><h3>Aucun résultat</h3><p>Modifiez ou supprimez des filtres</p></div>`;
+    
+    renderPagination();
+  }catch{
+    g.innerHTML=`<div class="no-results"><h3>Erreur de connexion</h3><p>Le backend n'est pas accessible.</p></div>`
+  }
+}
+
+function renderPagination(){
+  const p=document.getElementById("pagination");
+  if(totalPages<=1){p.innerHTML="";return}
+  
+  let html="";
+  
+  html+=`<button ${currentSearchPage===1?"disabled":""} onclick="changePage(${currentSearchPage-1})">‹ Précédent</button>`;
+  
+  for(let i=1;i<=totalPages;i++){
+    if(i===1 || i===totalPages || (i>=currentSearchPage-2 && i<=currentSearchPage+2)){
+      html+=`<button class="${i===currentSearchPage?"active":""}" onclick="changePage(${i})">${i}</button>`;
+    }else if(i===currentSearchPage-3 || i===currentSearchPage+3){
+      html+=`<span>...</span>`;
+    }
+  }
+  
+  html+=`<button ${currentSearchPage===totalPages?"disabled":""} onclick="changePage(${currentSearchPage+1})">Suivant ›</button>`;
+  
+  p.innerHTML=html;
+}
+
+function changePage(page){
+  if(page<1 || page>totalPages) return;
+  currentSearchPage=page;
+  applyFilters();
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+function resetFilters(){["f-brand","f-model","f-location","f-price-min","f-price-max","f-year-min","f-year-max","f-mileage","f-fuel","f-gearbox","f-score"].forEach(id=>document.getElementById(id).value="");document.getElementById("sortSelect").value="recent";currentSearchPage=1;applyFilters()}
+
+// CHIPS
+function renderChips(f){
+  chipClears=[];const chips=[];
+  function add(l,fn){chips.push(l);chipClears.push(fn)}
+  if(f.brand)add("Marque : "+f.brand,()=>{document.getElementById("f-brand").value="";currentSearchPage=1;applyFilters()});
+  if(f.model)add("Modèle : "+f.model,()=>{document.getElementById("f-model").value="";currentSearchPage=1;applyFilters()});
+  if(f.loc)add("Lieu : "+f.loc,()=>{document.getElementById("f-location").value="";currentSearchPage=1;applyFilters()});
+  if(f.pMin)add("Prix ≥ "+Number(f.pMin).toLocaleString()+"€",()=>{document.getElementById("f-price-min").value="";currentSearchPage=1;applyFilters()});
+  if(f.pMax)add("Prix ≤ "+Number(f.pMax).toLocaleString()+"€",()=>{document.getElementById("f-price-max").value="";currentSearchPage=1;applyFilters()});
+  if(f.yMin)add("Année ≥ "+f.yMin,()=>{document.getElementById("f-year-min").value="";currentSearchPage=1;applyFilters()});
+  if(f.yMax)add("Année ≤ "+f.yMax,()=>{document.getElementById("f-year-max").value="";currentSearchPage=1;applyFilters()});
+  if(f.mile)add("Km ≤ "+Number(f.mile).toLocaleString(),()=>{document.getElementById("f-mileage").value="";currentSearchPage=1;applyFilters()});
+  if(f.fuel)add("Carburant : "+f.fuel.charAt(0).toUpperCase()+f.fuel.slice(1),()=>{document.getElementById("f-fuel").value="";currentSearchPage=1;applyFilters()});
+  if(f.gear)add("Boîte : "+f.gear.charAt(0).toUpperCase()+f.gear.slice(1),()=>{document.getElementById("f-gearbox").value="";currentSearchPage=1;applyFilters()});
+  if(f.score)add("Score ≥ "+f.score,()=>{document.getElementById("f-score").value="";currentSearchPage=1;applyFilters()});
+  document.getElementById("activeFilters").innerHTML=chips.map((c,i)=>`<span class="chip">${c}<button class="chip-remove" onclick="chipClears[${i}]()">×</button></span>`).join("");
+}
+
+// PRICING
+function renderPricing(){
+  const plans=[
+    {name:"Gratuit",desc:"Pour découvrir",price:"0€",features:["3 annonces en aperçu","Score de bon plan","Support email"],cta:"Commencer",type:"secondary",plan:"gratuit"},
+    {name:"Premium",desc:"Pour les passionnés",price:"19,99€",priceSub:"/mois",features:["Annonces illimitées","Détection < 3 min","Alertes illimitées","Export CSV"],cta:"Passer Premium",type:"primary",plan:"premium",popular:true},
+    {name:"Pro",desc:"Pour les pros",price:"49,99€",priceSub:"/mois",features:["Tout du Premium","API complète","Multi-utilisateurs","Support 24/7"],cta:"Contacter",type:"secondary",plan:"pro"}
+  ];
+  document.getElementById("pricingGrid").innerHTML=plans.map(p=>`<div class="pricing-card${p.popular?" highlighted":""}">
+    ${p.popular?'<div class="popular-badge">⭐ Le plus populaire</div>':""}
+    <h3 class="plan-name">${p.name}</h3><p class="plan-desc">${p.desc}</p>
+    <div class="plan-price">${p.price}${p.priceSub?'<span>'+p.priceSub+'</span>':""}</div>
+    <ul class="plan-features">${p.features.map(f=>`<li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>${f}</li>`).join("")}</ul>
+    <button class="plan-cta ${p.type}" onclick="handlePlan('${p.plan}')">${p.cta}</button></div>`).join("");
+}
+function handlePlan(plan){
+  if(!isLoggedIn){showRegister();return}
+  if(plan==="gratuit"){notify("✅ Vous utilisez déjà le plan gratuit !","info");return}
+  document.getElementById("modalTitle").textContent="Abonnement";
+  document.getElementById("modalBody").innerHTML=`<div style="text-align:center;padding:1.4rem 0"><div style="width:65px;height:65px;margin:0 auto 1.1rem;background:linear-gradient(135deg,var(--primary),var(--primary-dark));border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:26px">⭐</div><h3 style="margin-bottom:.5rem">Passer ${plan==="premium"?"Premium":"Pro"}</h3><p style="color:var(--text-secondary);margin-bottom:1.4rem">En production vous seriez redirigé vers Stripe.</p><button class="btn-submit" onclick="currentUser.sub='${plan}';closeModal();fetchPreview();notify('🎉 Abonnement ${plan} activé !','success')">Simuler l'abonnement</button></div>`;
+  openModal();
+}
+
+window.addEventListener("scroll",()=>{document.getElementById("navbar").style.boxShadow=window.pageYOffset>55?"0 4px 18px rgba(0,0,0,.25)":"none"});
+
+// ⚡ CHARGEMENT INITIAL RAPIDE
+fetchPreview();
+fetchStats();
+</script>
+</body>
+</html>
