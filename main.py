@@ -6,6 +6,7 @@ CORRECTIONS APPLIQUÉES:
 - Filtre de recherche par ville avec rayon en km
 - Géolocalisation des villes françaises
 - Extraction optimisée des données
+- Mode headless activé pour optimisation ressources
 """
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -278,6 +279,7 @@ class ImprovedLeBonCoinScraper:
             chrome_version = self.get_chrome_version()
             
             options = uc.ChromeOptions()
+            options.add_argument('--headless=new')  # ✅ Mode headless (sans interface graphique)
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-blink-features=AutomationControlled')
@@ -305,7 +307,7 @@ class ImprovedLeBonCoinScraper:
             except:
                 pass
             
-            logger.info("✅ Navigateur OK")
+            logger.info("✅ Navigateur OK (mode headless)")
             return True
             
         except Exception as e:
@@ -1277,7 +1279,8 @@ async def root():
             "Ville toujours détectée",
             "Recherche géolocalisée (rayon en km)",
             "WebSocket temps réel",
-            "Monitoring automatique"
+            "Monitoring automatique",
+            "Mode headless optimisé"
         ]
     }
 
