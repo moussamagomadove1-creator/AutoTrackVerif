@@ -1,11 +1,11 @@
 """
-AutoTrack Backend - Version LÉGÈRE (HTTP + BeautifulSoup)
-NOUVELLE APPROCHE:
-- Pas de Selenium (trop lourd et détecté)
-- Requêtes HTTP simples avec httpx
-- Parsing HTML avec BeautifulSoup
-- Headers réalistes et rotation des User-Agents
-- Plus rapide et moins détectable
+AutoTrack Backend - Version OPTIMISÉE avec Rotation de Sessions
+AMÉLIORATIONS:
+- Rotation complète de session HTTP à chaque ban (nouveau client)
+- Délais courts et intelligents (max 5 secondes)
+- Headers rotatifs améliorés avec cookies
+- Gestion proactive des erreurs 403
+- Récupération automatique et rapide
 """
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -21,6 +21,7 @@ import json
 import math
 import httpx
 import random
+import time
 
 # BeautifulSoup
 try:
@@ -37,11 +38,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============ CONFIGURATION ============
-SCRAPE_INTERVAL_SECONDS = 30  # Augmenté pour éviter les bans
-SCRAPE_URL = "https://www.leboncoin.fr/voitures/offres"
-MAX_REQUESTS_BEFORE_BREAK = 2  # Seulement 2 requêtes puis pause longue
-BREAK_DURATION = 120  # 2 minutes de pause après ban
+# ============ CONFIGURATION OPTIMISÉE ============
+SCRAPE_INTERVAL_SECONDS = 25  # Intervalle entre scans
+MAX_DELAY_SECONDS = 5  # Délai maximum entre requêtes
+MIN_DELAY_SECONDS = 2  # Délai minimum
+BAN_RECOVERY_DELAY = 30  # Temps d'attente après ban avant nouvelle session (réduit)
+MAX_CONSECUTIVE_403 = 2  # Nombre d'erreurs 403 avant rotation de session
 
 # Base de données en mémoire
 database = {
@@ -60,6 +62,8 @@ USER_AGENTS = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
     'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
 ]
 
 # ============ GÉOLOCALISATION ============
@@ -115,44 +119,68 @@ def get_city_coordinates(city: str) -> Optional[tuple]:
             return coords
     return None
 
-# ============ SCRAPER HTTP LÉGER ============
+# ============ SCRAPER OPTIMISÉ AVEC ROTATION DE SESSIONS ============
 
-class LightHTTPScraper:
-    """Scraper léger utilisant httpx + BeautifulSoup"""
+class OptimizedHTTPScraper:
+    """Scraper optimisé avec rotation de sessions HTTP"""
     
     def __init__(self):
         self.client = None
         self.seen_ads = set()
         self.running = False
         self.request_count = 0
+        self.session_request_count = 0
         self.consecutive_403 = 0
-        self.is_banned = False
         self.last_successful_request = None
+        self.session_created_at = None
+        self.total_sessions = 0
     
-    async def setup(self):
-        """Initialise le client HTTP"""
-        if not self.client:
-            self.client = httpx.AsyncClient(
-                timeout=30.0,
-                follow_redirects=True,
-                limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
-            )
-            logger.info("✅ Client HTTP initialisé")
-        return True
-    
-    def _get_headers(self):
-        """Génère des headers réalistes avec rotation"""
+    async def _create_new_session(self):
+        """Crée une nouvelle session HTTP complète (rotation)"""
+        # Fermer l'ancienne session si elle existe
+        if self.client:
+            try:
+                await self.client.aclose()
+            except:
+                pass
+        
+        # Créer une nouvelle session avec un nouveau user-agent
         user_agent = random.choice(USER_AGENTS)
         
-        # Ajouter de la variabilité dans les headers
+        # Headers de base pour la session
         headers = {
             'User-Agent': user_agent,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
             'Accept-Encoding': 'gzip, deflate, br',
             'DNT': '1',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
+        }
+        
+        self.client = httpx.AsyncClient(
+            timeout=30.0,
+            follow_redirects=True,
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+            headers=headers,
+        )
+        
+        self.session_created_at = datetime.now()
+        self.session_request_count = 0
+        self.consecutive_403 = 0
+        self.total_sessions += 1
+        
+        logger.info(f"🔄 Nouvelle session HTTP créée (#{self.total_sessions}) - UA: {user_agent[:50]}...")
+    
+    async def setup(self):
+        """Initialise le client HTTP"""
+        await self._create_new_session()
+        logger.info("✅ Client HTTP initialisé")
+        return True
+    
+    def _get_headers(self):
+        """Génère des headers réalistes avec rotation"""
+        headers = {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             'Sec-Fetch-Dest': 'document',
             'Sec-Fetch-Mode': 'navigate',
             'Sec-Fetch-Site': 'none',
@@ -160,10 +188,27 @@ class LightHTTPScraper:
         }
         
         # Ajouter un referer aléatoire parfois
-        if random.random() > 0.5:
-            headers['Referer'] = 'https://www.google.fr/'
+        if random.random() > 0.6:
+            referers = [
+                'https://www.google.fr/',
+                'https://www.google.com/',
+                'https://www.bing.com/',
+            ]
+            headers['Referer'] = random.choice(referers)
         
         return headers
+    
+    async def _handle_ban_recovery(self):
+        """Gestion intelligente de la récupération après ban"""
+        logger.warning(f"🚫 BAN DÉTECTÉ - Rotation de session dans {BAN_RECOVERY_DELAY}s")
+        
+        # Pause courte
+        await asyncio.sleep(BAN_RECOVERY_DELAY)
+        
+        # Créer une nouvelle session complète (nouveau navigateur)
+        await self._create_new_session()
+        
+        logger.info("✅ Nouvelle session créée - Prêt à reprendre")
     
     async def get_recent_ads(self, max_ads=30):
         """Récupère les annonces via HTTP + parsing HTML"""
@@ -171,42 +216,39 @@ class LightHTTPScraper:
             logger.error("❌ BeautifulSoup non disponible")
             return []
         
-        # Vérifier si on est banni
-        if self.is_banned:
-            logger.warning(f"⏸️ En pause (ban détecté) - Attente de {BREAK_DURATION}s...")
-            await asyncio.sleep(BREAK_DURATION)
-            self.is_banned = False
-            self.consecutive_403 = 0
-            logger.info("🔄 Reprise après pause")
-        
         self.request_count += 1
-        logger.info(f"🔍 [HTTP] Récupération de {max_ads} annonces (requête #{self.request_count})...")
+        self.session_request_count += 1
         
-        # Délai aléatoire avant la requête (simuler humain)
+        logger.info(f"🔍 Requête #{self.request_count} (session: {self.session_request_count})...")
+        
+        # Délai intelligent avant la requête
         if self.last_successful_request:
-            delay = random.uniform(2, 5)
-            logger.info(f"⏱️ Délai anti-détection: {delay:.1f}s...")
+            delay = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
+            logger.info(f"⏱️ Délai: {delay:.1f}s")
             await asyncio.sleep(delay)
         
         try:
-            # Requête HTTP avec headers réalistes et rotatifs
+            # Requête HTTP avec headers rotatifs
             headers = self._get_headers()
-            response = await self.client.get(SCRAPE_URL, headers=headers)
+            response = await self.client.get(
+                "https://www.leboncoin.fr/voitures/offres",
+                headers=headers
+            )
             
+            # Gestion des erreurs HTTP
             if response.status_code == 403:
                 self.consecutive_403 += 1
-                logger.error(f"❌ Erreur 403 - Bloqué ({self.consecutive_403}/3)")
+                logger.error(f"❌ Erreur 403 ({self.consecutive_403}/{MAX_CONSECUTIVE_403})")
                 
-                # Si 3 erreurs 403 consécutives, pause longue
-                if self.consecutive_403 >= 3:
-                    logger.warning(f"🚫 BAN DÉTECTÉ - Pause de {BREAK_DURATION}s")
-                    self.is_banned = True
+                # Si trop d'erreurs 403, rotation de session
+                if self.consecutive_403 >= MAX_CONSECUTIVE_403:
+                    await self._handle_ban_recovery()
                 
                 return []
             
             if response.status_code == 429:
-                logger.warning("⚠️ Rate limit - Pause de 60 secondes...")
-                await asyncio.sleep(60)
+                logger.warning("⚠️ Rate limit - Rotation de session...")
+                await self._handle_ban_recovery()
                 return []
             
             if response.status_code != 200:
@@ -218,7 +260,7 @@ class LightHTTPScraper:
             self.last_successful_request = datetime.now()
             
             html_content = response.text
-            logger.info(f"✅ Page téléchargée ({len(html_content)} caractères)")
+            logger.info(f"✅ Page téléchargée ({len(html_content)} chars)")
             
             # Parser avec BeautifulSoup
             soup = BeautifulSoup(html_content, 'html.parser')
@@ -230,24 +272,24 @@ class LightHTTPScraper:
             ads = soup.find_all('a', {'data-qa-id': 'aditem_container'})
             if ads and len(ads) >= 5:
                 ad_elements = ads
-                logger.info(f"✅ {len(ads)} annonces trouvées (data-qa-id)")
+                logger.info(f"✅ {len(ads)} annonces (data-qa-id)")
             
             # Stratégie 2: articles
             if not ad_elements:
                 ads = soup.find_all('article')
                 if ads and len(ads) >= 5:
                     ad_elements = ads
-                    logger.info(f"✅ {len(ads)} annonces trouvées (article)")
+                    logger.info(f"✅ {len(ads)} annonces (article)")
             
             # Stratégie 3: liens vers /voitures/
             if not ad_elements:
                 ads = soup.find_all('a', href=re.compile(r'/voitures/\d+\.htm'))
                 if ads:
                     ad_elements = ads
-                    logger.info(f"✅ {len(ads)} annonces trouvées (liens)")
+                    logger.info(f"✅ {len(ads)} annonces (liens)")
             
             if not ad_elements:
-                logger.warning("⚠️ AUCUNE ANNONCE DÉTECTÉE dans le HTML")
+                logger.warning("⚠️ Aucune annonce détectée")
                 return []
             
             # Parser les annonces
@@ -257,25 +299,21 @@ class LightHTTPScraper:
                     ad_data = self._parse_ad(element, idx, soup)
                     if ad_data:
                         ads_found.append(ad_data)
-                        if idx < 3:
-                            logger.info(f"  ✅ #{idx+1}: {ad_data['title'][:50]} - {ad_data['price']}€ - {ad_data['location']}")
                 except Exception as e:
-                    if idx < 3:
-                        logger.warning(f"  ⚠️ #{idx+1}: {str(e)[:80]}")
                     continue
             
-            logger.info(f"📊 Total parsé: {len(ads_found)}/{len(ad_elements[:max_ads])} annonces")
+            logger.info(f"📊 {len(ads_found)}/{len(ad_elements[:max_ads])} annonces parsées")
             return ads_found
             
         except httpx.TimeoutException:
-            logger.error("❌ Timeout de la requête HTTP")
+            logger.error("❌ Timeout")
             return []
         except Exception as e:
-            logger.error(f"❌ Erreur HTTP: {str(e)}")
+            logger.error(f"❌ Erreur: {str(e)[:100]}")
             return []
     
     def _parse_ad(self, element, idx, soup):
-        """Parse une annonce depuis BeautifulSoup avec parsing amélioré des prix"""
+        """Parse une annonce depuis BeautifulSoup"""
         try:
             # Titre
             title = "Véhicule d'occasion"
@@ -286,7 +324,7 @@ class LightHTTPScraper:
                 h_elem = element.find(['h2', 'h3', 'p'])
                 if h_elem:
                     text = h_elem.get_text(strip=True)
-                    if len(text) > 10 and len(text) < 150:
+                    if 10 < len(text) < 150:
                         title = text
             
             # Prix - PARSING AMÉLIORÉ
@@ -298,19 +336,17 @@ class LightHTTPScraper:
                 price_text = price_elem.get_text(strip=True)
                 price = self._extract_price(price_text)
             
-            # Méthode 2: Chercher dans tout le texte de l'élément
+            # Méthode 2: Chercher dans tout le texte
             if price == 0:
                 full_text = element.get_text()
-                # Chercher pattern "XXXX €" ou "XX XXX €"
                 price_patterns = [
-                    r'(\d{1,3}(?:\s?\d{3})*)\s*€',  # "12 500 €" ou "12500 €"
-                    r'(\d+)\s*€',  # "1500 €"
+                    r'(\d{1,3}(?:\s?\d{3})*)\s*€',
+                    r'(\d+)\s*€',
                 ]
                 
                 for pattern in price_patterns:
                     matches = re.findall(pattern, full_text)
                     if matches:
-                        # Prendre le premier prix trouvé
                         price_str = matches[0].replace(' ', '').replace('\u202f', '')
                         try:
                             price = int(price_str)
@@ -320,15 +356,6 @@ class LightHTTPScraper:
                                 price = 0
                         except:
                             price = 0
-            
-            # Méthode 3: Chercher dans les spans avec classe contenant "price"
-            if price == 0:
-                price_spans = element.find_all(['span', 'p', 'div'], class_=re.compile(r'price', re.I))
-                for span in price_spans:
-                    price_text = span.get_text(strip=True)
-                    price = self._extract_price(price_text)
-                    if price > 0:
-                        break
             
             # URL
             url = ""
@@ -355,7 +382,6 @@ class LightHTTPScraper:
             if loc_elem:
                 location = loc_elem.get_text(strip=True)
             else:
-                # Chercher pattern ville (code postal)
                 full_text = element.get_text()
                 loc_match = re.search(r'([A-ZÀ-Ü][a-zA-ZÀ-ÿ\s\-\']+)\s*\((\d{5})\)', full_text)
                 if loc_match:
@@ -370,7 +396,7 @@ class LightHTTPScraper:
                     if not any(x in img_url.lower() for x in ['logo', 'icon', 'favicon']):
                         images.append(img_url)
             
-            # Détections depuis le texte
+            # Détections
             full_text = element.get_text()
             brand = self._detect_brand(title + " " + full_text)
             model = self._detect_model(title, brand)
@@ -403,7 +429,6 @@ class LightHTTPScraper:
             }
             
         except Exception as e:
-            logger.error(f"Erreur parsing annonce {idx}: {str(e)}")
             return None
     
     def _extract_price(self, price_text):
@@ -412,18 +437,14 @@ class LightHTTPScraper:
             return 0
         
         try:
-            # Nettoyer le texte (enlever espaces insécables, espaces normaux, etc.)
             clean_text = price_text.replace('\u202f', '').replace(' ', '').replace('\xa0', '')
             clean_text = clean_text.replace('€', '').replace(',', '').strip()
             
-            # Extraire les chiffres
             numbers = re.findall(r'\d+', clean_text)
             if numbers:
-                # Joindre tous les chiffres (pour gérer "12 500" → "12500")
                 price_str = ''.join(numbers)
                 price = int(price_str)
                 
-                # Validation
                 if 100 <= price <= 500000:
                     return price
             
@@ -518,7 +539,7 @@ class LightHTTPScraper:
             await self.client.aclose()
 
 # Instance globale
-scraper = LightHTTPScraper()
+scraper = OptimizedHTTPScraper()
 
 # ============ WEBSOCKET ============
 
@@ -551,7 +572,7 @@ async def broadcast_new_vehicle(vehicle):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gestion du cycle de vie"""
-    logger.info("✅ API démarrée - Mode HTTP LÉGER")
+    logger.info("✅ API démarrée - Mode OPTIMISÉ avec Rotation")
     task = asyncio.create_task(background_monitor())
     yield
     scraper.running = False
@@ -559,9 +580,9 @@ async def lifespan(app: FastAPI):
     logger.info("🛑 API arrêtée")
 
 app = FastAPI(
-    title="AutoTrack API - Version Légère",
-    version="6.0",
-    description="API légère avec HTTP + BeautifulSoup",
+    title="AutoTrack API - Version Optimisée",
+    version="7.0",
+    description="API optimisée avec rotation de sessions HTTP",
     lifespan=lifespan
 )
 
@@ -589,16 +610,18 @@ async def websocket_endpoint(websocket: WebSocket):
         websocket_clients.remove(websocket)
         logger.info(f"🔌 Client déconnecté")
 
-# ============ MONITORING ============
+# ============ MONITORING OPTIMISÉ ============
 
 async def background_monitor():
-    """Monitoring en arrière-plan avec gestion anti-ban"""
+    """Monitoring en arrière-plan avec rotation intelligente"""
     scraper.running = True
-    logger.info(f"⏱️  Monitoring démarré (intervalle: {SCRAPE_INTERVAL_SECONDS}s)")
-    logger.info(f"🛡️ Protection anti-ban: max {MAX_REQUESTS_BEFORE_BREAK} requêtes puis pause de {BREAK_DURATION}s")
+    logger.info(f"⏱️ Monitoring démarré (intervalle: {SCRAPE_INTERVAL_SECONDS}s)")
+    logger.info(f"🔄 Rotation auto après {MAX_CONSECUTIVE_403} erreurs 403")
+    logger.info(f"⚡ Délais: {MIN_DELAY_SECONDS}-{MAX_DELAY_SECONDS}s")
     
     await scraper.setup()
     
+    # Scan initial
     logger.info("🔍 Scan initial...")
     try:
         initial_ads = await scraper.get_recent_ads(max_ads=30)
@@ -611,26 +634,17 @@ async def background_monitor():
     
     scan_count = 0
     total_new = 0
-    requests_in_session = 0
     
-    logger.info(f"✅ Monitoring actif en mode HTTP!\n")
+    logger.info(f"✅ Monitoring actif!\n")
     
     while scraper.running:
         scan_count += 1
         current_time = datetime.now().strftime("%H:%M:%S")
         
-        logger.info(f"[{current_time}] 🔍 Scan #{scan_count}...")
-        
-        # Pause préventive après X requêtes
-        if requests_in_session >= MAX_REQUESTS_BEFORE_BREAK:
-            logger.warning(f"⏸️ Pause préventive de {BREAK_DURATION}s après {requests_in_session} requêtes...")
-            await asyncio.sleep(BREAK_DURATION)
-            requests_in_session = 0
-            logger.info("🔄 Reprise du monitoring")
+        logger.info(f"[{current_time}] 🔍 Scan #{scan_count} (session #{scraper.total_sessions})...")
         
         try:
             ads = await scraper.get_recent_ads(max_ads=30)
-            requests_in_session += 1
             
             new_ads = [ad for ad in ads if ad['id'] not in scraper.seen_ads]
             
@@ -641,7 +655,6 @@ async def background_monitor():
                 for ad in new_ads:
                     scraper.seen_ads.add(ad['id'])
                     database["vehicles"].insert(0, ad)
-                    logger.info(f"  📌 {ad['title'][:60]}... - {ad['price']}€")
                     await broadcast_new_vehicle(ad)
                     
                     if len(database["vehicles"]) > 1000:
@@ -650,10 +663,10 @@ async def background_monitor():
                 logger.info(f"✓ Aucune nouvelle annonce")
             
             if scan_count % 5 == 0:
-                logger.info(f"\n📊 Stats: {total_new} nouvelles | {len(database['vehicles'])} total | Requêtes session: {requests_in_session}/{MAX_REQUESTS_BEFORE_BREAK}\n")
+                logger.info(f"\n📊 Stats: {total_new} nouvelles | {len(database['vehicles'])} total | Sessions: {scraper.total_sessions}\n")
             
         except Exception as e:
-            logger.error(f"❌ Erreur scan: {str(e)}")
+            logger.error(f"❌ Erreur: {str(e)[:100]}")
         
         logger.info(f"⏳ Prochaine vérification dans {SCRAPE_INTERVAL_SECONDS}s...\n")
         await asyncio.sleep(SCRAPE_INTERVAL_SECONDS)
@@ -664,13 +677,14 @@ async def background_monitor():
 async def root():
     """Informations API"""
     return {
-        "name": "AutoTrack API - Version Légère",
-        "version": "6.0",
+        "name": "AutoTrack API - Optimisée",
+        "version": "7.0",
         "status": "running",
-        "method": "HTTP + BeautifulSoup",
-        "beautifulsoup_available": BS4_AVAILABLE,
+        "method": "HTTP + BeautifulSoup avec Rotation",
         "vehicles_count": len(database["vehicles"]),
         "websocket_clients": len(websocket_clients),
+        "total_sessions": scraper.total_sessions,
+        "session_requests": scraper.session_request_count,
     }
 
 @app.get("/api/vehicles")
@@ -717,8 +731,10 @@ async def get_stats():
     return {
         "total_vehicles": len(database["vehicles"]),
         "scraper_running": scraper.running,
-        "method": "HTTP Light",
+        "method": "HTTP Optimized",
         "requests_count": scraper.request_count,
+        "total_sessions": scraper.total_sessions,
+        "current_session_requests": scraper.session_request_count,
     }
 
 if __name__ == "__main__":
