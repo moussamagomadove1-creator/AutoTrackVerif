@@ -33,37 +33,66 @@ try:
     SELENIUM_AVAILABLE = True
 except ImportError:
     SELENIUM_AVAILABLE = False
+    print("❌ Selenium ou undetected_chromedriver non installé")
 
-def init_chrome():
+def init_chrome(headless: bool = True):
     """
     Initialise le navigateur Chrome avec undetected_chromedriver.
     Retourne le driver ou None si erreur.
     """
     if not SELENIUM_AVAILABLE:
-        print("❌ Selenium ou undetected_chromedriver non installé")
+        logging.error("Selenium ou undetected_chromedriver non installé")
         return None
 
     try:
         options = uc.ChromeOptions()
-        options.add_argument("--headless=new")  # Chrome en mode headless
+        if headless:
+            options.add_argument("--headless=new")  # Mode headless moderne
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-extensions")
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--window-size=1920,1080")
+        options.add_argument("--remote-debugging-port=9222")  # utile pour Docker
+
+        # Optionnel : choisir un user-agent aléatoire pour réduire le risque de blocage
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
+        ]
+        options.add_argument(f"user-agent={random.choice(user_agents)}")
 
         driver = uc.Chrome(options=options)
-        print("✅ Chrome initialisé avec succès")
+        logging.info("✅ Chrome initialisé avec succès")
         return driver
 
     except Exception as e:
-        print(f"❌ Erreur init Chrome: {e}")
+        logging.error(f"❌ Erreur init Chrome: {e}")
         return None
 
 # ----------------------- Agent log -----------------------
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 DEBUG_LOG_PATH = os.path.join(os.path.dirname(_script_dir), ".cursor", "debug.log")
+
+def _debug_log(message, data=None, hypothesis_id=None):
+    try:
+        import json as _j
+        _dir = os.path.dirname(DEBUG_LOG_PATH)
+        if _dir:
+            os.makedirs(_dir, exist_ok=True)
+        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as _f:
+            _f.write(_j.dumps({
+                "timestamp": __import__("time").time()*1000,
+                "location": "main.py",
+                "message": message,
+                "data": data or {},
+                "sessionId": "debug-session",
+                "hypothesisId": hypothesis_id or "E"
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
 
 def _debug_log(message, data=None, hypothesis_id=None):
     try:
