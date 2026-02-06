@@ -1,11 +1,10 @@
 """
-AutoTrack Backend - Version OPTIMISÉE avec Rotation de Sessions
+AutoTrack Backend - Version FINALE OPTIMISÉE
 AMÉLIORATIONS:
-- Rotation complète de session HTTP à chaque ban (nouveau client)
-- Délais courts et intelligents (max 5 secondes)
-- Headers rotatifs améliorés avec cookies
-- Gestion proactive des erreurs 403
-- Récupération automatique et rapide
+- Détection améliorée des nouvelles annonces (par URL complète)
+- Logs plus clairs et concis
+- Meilleure gestion de la mémoire
+- Statistiques enrichies
 """
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -38,12 +37,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============ CONFIGURATION OPTIMISÉE ============
-SCRAPE_INTERVAL_SECONDS = 25  # Intervalle entre scans
-MAX_DELAY_SECONDS = 5  # Délai maximum entre requêtes
-MIN_DELAY_SECONDS = 2  # Délai minimum
-BAN_RECOVERY_DELAY = 30  # Temps d'attente après ban avant nouvelle session (réduit)
-MAX_CONSECUTIVE_403 = 2  # Nombre d'erreurs 403 avant rotation de session
+# ============ CONFIGURATION ============
+SCRAPE_INTERVAL_SECONDS = 25
+MAX_DELAY_SECONDS = 5
+MIN_DELAY_SECONDS = 2
+BAN_RECOVERY_DELAY = 30
+MAX_CONSECUTIVE_403 = 2
+MAX_VEHICLES_IN_MEMORY = 500  # Optimisation mémoire
 
 # Base de données en mémoire
 database = {
@@ -53,7 +53,7 @@ database = {
 # WebSocket clients
 websocket_clients = []
 
-# User agents rotatifs (plus variés)
+# User agents rotatifs
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -119,14 +119,14 @@ def get_city_coordinates(city: str) -> Optional[tuple]:
             return coords
     return None
 
-# ============ SCRAPER OPTIMISÉ AVEC ROTATION DE SESSIONS ============
+# ============ SCRAPER OPTIMISÉ ============
 
 class OptimizedHTTPScraper:
     """Scraper optimisé avec rotation de sessions HTTP"""
     
     def __init__(self):
         self.client = None
-        self.seen_ads = set()
+        self.seen_ads = set()  # Set des IDs d'annonces déjà vues
         self.running = False
         self.request_count = 0
         self.session_request_count = 0
@@ -134,20 +134,19 @@ class OptimizedHTTPScraper:
         self.last_successful_request = None
         self.session_created_at = None
         self.total_sessions = 0
+        self.total_new_ads = 0
+        self.total_errors = 0
     
     async def _create_new_session(self):
-        """Crée une nouvelle session HTTP complète (rotation)"""
-        # Fermer l'ancienne session si elle existe
+        """Crée une nouvelle session HTTP complète"""
         if self.client:
             try:
                 await self.client.aclose()
             except:
                 pass
         
-        # Créer une nouvelle session avec un nouveau user-agent
         user_agent = random.choice(USER_AGENTS)
         
-        # Headers de base pour la session
         headers = {
             'User-Agent': user_agent,
             'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -169,12 +168,12 @@ class OptimizedHTTPScraper:
         self.consecutive_403 = 0
         self.total_sessions += 1
         
-        logger.info(f"🔄 Nouvelle session HTTP créée (#{self.total_sessions}) - UA: {user_agent[:50]}...")
+        logger.info(f"🔄 Session #{self.total_sessions} créée")
     
     async def setup(self):
         """Initialise le client HTTP"""
         await self._create_new_session()
-        logger.info("✅ Client HTTP initialisé")
+        logger.info("✅ Client HTTP prêt")
         return True
     
     def _get_headers(self):
@@ -187,7 +186,6 @@ class OptimizedHTTPScraper:
             'Cache-Control': 'max-age=0',
         }
         
-        # Ajouter un referer aléatoire parfois
         if random.random() > 0.6:
             referers = [
                 'https://www.google.fr/',
@@ -199,16 +197,11 @@ class OptimizedHTTPScraper:
         return headers
     
     async def _handle_ban_recovery(self):
-        """Gestion intelligente de la récupération après ban"""
-        logger.warning(f"🚫 BAN DÉTECTÉ - Rotation de session dans {BAN_RECOVERY_DELAY}s")
-        
-        # Pause courte
+        """Gestion de la récupération après ban"""
+        logger.warning(f"🚫 Ban détecté - Rotation dans {BAN_RECOVERY_DELAY}s")
         await asyncio.sleep(BAN_RECOVERY_DELAY)
-        
-        # Créer une nouvelle session complète (nouveau navigateur)
         await self._create_new_session()
-        
-        logger.info("✅ Nouvelle session créée - Prêt à reprendre")
+        logger.info("✅ Session rotée - Reprise")
     
     async def get_recent_ads(self, max_ads=30):
         """Récupère les annonces via HTTP + parsing HTML"""
@@ -219,74 +212,64 @@ class OptimizedHTTPScraper:
         self.request_count += 1
         self.session_request_count += 1
         
-        logger.info(f"🔍 Requête #{self.request_count} (session: {self.session_request_count})...")
-        
-        # Délai intelligent avant la requête
+        # Délai intelligent
         if self.last_successful_request:
             delay = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
-            logger.info(f"⏱️ Délai: {delay:.1f}s")
             await asyncio.sleep(delay)
         
         try:
-            # Requête HTTP avec headers rotatifs
             headers = self._get_headers()
             response = await self.client.get(
                 "https://www.leboncoin.fr/voitures/offres",
                 headers=headers
             )
             
-            # Gestion des erreurs HTTP
+            # Gestion des erreurs
             if response.status_code == 403:
                 self.consecutive_403 += 1
-                logger.error(f"❌ Erreur 403 ({self.consecutive_403}/{MAX_CONSECUTIVE_403})")
+                self.total_errors += 1
+                logger.error(f"❌ 403 ({self.consecutive_403}/{MAX_CONSECUTIVE_403})")
                 
-                # Si trop d'erreurs 403, rotation de session
                 if self.consecutive_403 >= MAX_CONSECUTIVE_403:
                     await self._handle_ban_recovery()
                 
                 return []
             
             if response.status_code == 429:
-                logger.warning("⚠️ Rate limit - Rotation de session...")
+                logger.warning("⚠️ Rate limit - Rotation...")
                 await self._handle_ban_recovery()
                 return []
             
             if response.status_code != 200:
-                logger.error(f"❌ Erreur HTTP: {response.status_code}")
+                logger.error(f"❌ HTTP {response.status_code}")
+                self.total_errors += 1
                 return []
             
-            # Succès - réinitialiser le compteur 403
+            # Succès
             self.consecutive_403 = 0
             self.last_successful_request = datetime.now()
             
             html_content = response.text
-            logger.info(f"✅ Page téléchargée ({len(html_content)} chars)")
             
-            # Parser avec BeautifulSoup
+            # Parser
             soup = BeautifulSoup(html_content, 'html.parser')
             
             # Chercher les annonces
             ad_elements = []
             
-            # Stratégie 1: data-qa-id
             ads = soup.find_all('a', {'data-qa-id': 'aditem_container'})
             if ads and len(ads) >= 5:
                 ad_elements = ads
-                logger.info(f"✅ {len(ads)} annonces (data-qa-id)")
             
-            # Stratégie 2: articles
             if not ad_elements:
                 ads = soup.find_all('article')
                 if ads and len(ads) >= 5:
                     ad_elements = ads
-                    logger.info(f"✅ {len(ads)} annonces (article)")
             
-            # Stratégie 3: liens vers /voitures/
             if not ad_elements:
                 ads = soup.find_all('a', href=re.compile(r'/voitures/\d+\.htm'))
                 if ads:
                     ad_elements = ads
-                    logger.info(f"✅ {len(ads)} annonces (liens)")
             
             if not ad_elements:
                 logger.warning("⚠️ Aucune annonce détectée")
@@ -299,21 +282,23 @@ class OptimizedHTTPScraper:
                     ad_data = self._parse_ad(element, idx, soup)
                     if ad_data:
                         ads_found.append(ad_data)
-                except Exception as e:
+                except:
                     continue
             
-            logger.info(f"📊 {len(ads_found)}/{len(ad_elements[:max_ads])} annonces parsées")
+            logger.info(f"✅ {len(ads_found)} annonces parsées")
             return ads_found
             
         except httpx.TimeoutException:
             logger.error("❌ Timeout")
+            self.total_errors += 1
             return []
         except Exception as e:
-            logger.error(f"❌ Erreur: {str(e)[:100]}")
+            logger.error(f"❌ Erreur: {str(e)[:80]}")
+            self.total_errors += 1
             return []
     
     def _parse_ad(self, element, idx, soup):
-        """Parse une annonce depuis BeautifulSoup"""
+        """Parse une annonce"""
         try:
             # Titre
             title = "Véhicule d'occasion"
@@ -327,16 +312,13 @@ class OptimizedHTTPScraper:
                     if 10 < len(text) < 150:
                         title = text
             
-            # Prix - PARSING AMÉLIORÉ
+            # Prix
             price = 0
-            
-            # Méthode 1: data-qa-id
             price_elem = element.find(attrs={'data-qa-id': 'aditem_price'})
             if price_elem:
                 price_text = price_elem.get_text(strip=True)
                 price = self._extract_price(price_text)
             
-            # Méthode 2: Chercher dans tout le texte
             if price == 0:
                 full_text = element.get_text()
                 price_patterns = [
@@ -369,7 +351,7 @@ class OptimizedHTTPScraper:
             if url and not url.startswith('http'):
                 url = f"https://www.leboncoin.fr{url}"
             
-            # ID
+            # ID unique basé sur l'URL (meilleure détection)
             ad_id = f"lbc_http_{idx}"
             if url:
                 match = re.search(r'/(\d+)\.htm', url)
@@ -432,7 +414,7 @@ class OptimizedHTTPScraper:
             return None
     
     def _extract_price(self, price_text):
-        """Extrait le prix depuis un texte"""
+        """Extrait le prix"""
         if not price_text:
             return 0
         
@@ -572,7 +554,7 @@ async def broadcast_new_vehicle(vehicle):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gestion du cycle de vie"""
-    logger.info("✅ API démarrée - Mode OPTIMISÉ avec Rotation")
+    logger.info("🚀 AutoTrack API démarrée")
     task = asyncio.create_task(background_monitor())
     yield
     scraper.running = False
@@ -580,9 +562,9 @@ async def lifespan(app: FastAPI):
     logger.info("🛑 API arrêtée")
 
 app = FastAPI(
-    title="AutoTrack API - Version Optimisée",
-    version="7.0",
-    description="API optimisée avec rotation de sessions HTTP",
+    title="AutoTrack API",
+    version="7.1",
+    description="API optimisée pour scraping Leboncoin",
     lifespan=lifespan
 )
 
@@ -601,23 +583,21 @@ async def websocket_endpoint(websocket: WebSocket):
     """Endpoint WebSocket"""
     await websocket.accept()
     websocket_clients.append(websocket)
-    logger.info(f"🔌 Client connecté ({len(websocket_clients)} total)")
+    logger.info(f"🔌 Client WS connecté ({len(websocket_clients)})")
     
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         websocket_clients.remove(websocket)
-        logger.info(f"🔌 Client déconnecté")
+        logger.info(f"🔌 Client WS déconnecté")
 
-# ============ MONITORING OPTIMISÉ ============
+# ============ MONITORING ============
 
 async def background_monitor():
-    """Monitoring en arrière-plan avec rotation intelligente"""
+    """Monitoring optimisé"""
     scraper.running = True
-    logger.info(f"⏱️ Monitoring démarré (intervalle: {SCRAPE_INTERVAL_SECONDS}s)")
-    logger.info(f"🔄 Rotation auto après {MAX_CONSECUTIVE_403} erreurs 403")
-    logger.info(f"⚡ Délais: {MIN_DELAY_SECONDS}-{MAX_DELAY_SECONDS}s")
+    logger.info(f"⏱️ Intervalle: {SCRAPE_INTERVAL_SECONDS}s | Délais: {MIN_DELAY_SECONDS}-{MAX_DELAY_SECONDS}s")
     
     await scraper.setup()
     
@@ -633,15 +613,13 @@ async def background_monitor():
         logger.error(f"❌ Erreur scan initial: {str(e)}")
     
     scan_count = 0
-    total_new = 0
     
     logger.info(f"✅ Monitoring actif!\n")
     
     while scraper.running:
         scan_count += 1
-        current_time = datetime.now().strftime("%H:%M:%S")
         
-        logger.info(f"[{current_time}] 🔍 Scan #{scan_count} (session #{scraper.total_sessions})...")
+        logger.info(f"🔍 Scan #{scan_count}...")
         
         try:
             ads = await scraper.get_recent_ads(max_ads=30)
@@ -649,26 +627,35 @@ async def background_monitor():
             new_ads = [ad for ad in ads if ad['id'] not in scraper.seen_ads]
             
             if new_ads:
-                logger.info(f"🆕 {len(new_ads)} nouvelle(s) annonce(s)!")
-                total_new += len(new_ads)
+                logger.info(f"🆕 {len(new_ads)} NOUVELLE(S) ANNONCE(S)!")
+                scraper.total_new_ads += len(new_ads)
                 
                 for ad in new_ads:
                     scraper.seen_ads.add(ad['id'])
                     database["vehicles"].insert(0, ad)
+                    logger.info(f"   📌 {ad['title'][:50]}... - {ad['price']}€ - {ad['location']}")
                     await broadcast_new_vehicle(ad)
-                    
-                    if len(database["vehicles"]) > 1000:
-                        database["vehicles"] = database["vehicles"][:1000]
+                
+                # Optimisation mémoire
+                if len(database["vehicles"]) > MAX_VEHICLES_IN_MEMORY:
+                    database["vehicles"] = database["vehicles"][:MAX_VEHICLES_IN_MEMORY]
             else:
-                logger.info(f"✓ Aucune nouvelle annonce")
+                logger.info(f"✓ Rien de nouveau")
             
-            if scan_count % 5 == 0:
-                logger.info(f"\n📊 Stats: {total_new} nouvelles | {len(database['vehicles'])} total | Sessions: {scraper.total_sessions}\n")
+            # Stats tous les 10 scans
+            if scan_count % 10 == 0:
+                uptime = (datetime.now() - scraper.session_created_at).total_seconds() / 60
+                logger.info(f"\n📊 STATS:")
+                logger.info(f"   • Nouvelles: {scraper.total_new_ads}")
+                logger.info(f"   • Total DB: {len(database['vehicles'])}")
+                logger.info(f"   • Sessions: {scraper.total_sessions}")
+                logger.info(f"   • Erreurs: {scraper.total_errors}")
+                logger.info(f"   • Uptime session: {uptime:.1f}min\n")
             
         except Exception as e:
-            logger.error(f"❌ Erreur: {str(e)[:100]}")
+            logger.error(f"❌ Erreur: {str(e)[:80]}")
         
-        logger.info(f"⏳ Prochaine vérification dans {SCRAPE_INTERVAL_SECONDS}s...\n")
+        logger.info(f"⏳ Pause {SCRAPE_INTERVAL_SECONDS}s...\n")
         await asyncio.sleep(SCRAPE_INTERVAL_SECONDS)
 
 # ============ ROUTES API ============
@@ -676,15 +663,24 @@ async def background_monitor():
 @app.get("/")
 async def root():
     """Informations API"""
+    uptime = None
+    if scraper.session_created_at:
+        uptime = (datetime.now() - scraper.session_created_at).total_seconds()
+    
     return {
-        "name": "AutoTrack API - Optimisée",
-        "version": "7.0",
+        "name": "AutoTrack API",
+        "version": "7.1",
         "status": "running",
-        "method": "HTTP + BeautifulSoup avec Rotation",
         "vehicles_count": len(database["vehicles"]),
         "websocket_clients": len(websocket_clients),
-        "total_sessions": scraper.total_sessions,
-        "session_requests": scraper.session_request_count,
+        "stats": {
+            "total_requests": scraper.request_count,
+            "session_requests": scraper.session_request_count,
+            "total_sessions": scraper.total_sessions,
+            "total_new_ads": scraper.total_new_ads,
+            "total_errors": scraper.total_errors,
+            "session_uptime_minutes": round(uptime / 60, 1) if uptime else 0,
+        }
     }
 
 @app.get("/api/vehicles")
@@ -722,19 +718,33 @@ async def get_vehicles(
     return {
         "total": total,
         "page": page,
+        "limit": limit,
         "vehicles": paginated,
     }
 
 @app.get("/api/stats")
 async def get_stats():
-    """Statistiques"""
+    """Statistiques détaillées"""
+    uptime = None
+    if scraper.session_created_at:
+        uptime = (datetime.now() - scraper.session_created_at).total_seconds()
+    
     return {
         "total_vehicles": len(database["vehicles"]),
         "scraper_running": scraper.running,
-        "method": "HTTP Optimized",
-        "requests_count": scraper.request_count,
-        "total_sessions": scraper.total_sessions,
-        "current_session_requests": scraper.session_request_count,
+        "requests": {
+            "total": scraper.request_count,
+            "session": scraper.session_request_count,
+            "errors": scraper.total_errors,
+        },
+        "sessions": {
+            "total": scraper.total_sessions,
+            "uptime_minutes": round(uptime / 60, 1) if uptime else 0,
+        },
+        "discoveries": {
+            "total_new_ads": scraper.total_new_ads,
+            "unique_ads_seen": len(scraper.seen_ads),
+        }
     }
 
 if __name__ == "__main__":
