@@ -1,10 +1,10 @@
 """
-AutoTrack Backend - Version FINALE OPTIMISÉE
-AMÉLIORATIONS:
-- Détection améliorée des nouvelles annonces (par URL complète)
-- Logs plus clairs et concis
-- Meilleure gestion de la mémoire
-- Statistiques enrichies
+AutoTrack Backend - Version CORRIGÉE
+CORRECTIONS:
+- Scraping multi-pages (pages 1, 2, 3)
+- Affichage des annonces parsées pour debug
+- Meilleure détection des IDs uniques
+- Logs détaillés du contenu
 """
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -38,12 +38,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============ CONFIGURATION ============
-SCRAPE_INTERVAL_SECONDS = 5
+SCRAPE_INTERVAL_SECONDS = 30
 MAX_DELAY_SECONDS = 5
 MIN_DELAY_SECONDS = 2
 BAN_RECOVERY_DELAY = 30
 MAX_CONSECUTIVE_403 = 2
-MAX_VEHICLES_IN_MEMORY = 500  # Optimisation mémoire
+MAX_VEHICLES_IN_MEMORY = 500
+PAGES_TO_SCRAPE = [1, 2, 3]  # Scraper 3 pages
 
 # Base de données en mémoire
 database = {
@@ -62,8 +63,6 @@ USER_AGENTS = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
     'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
 ]
 
 # ============ GÉOLOCALISATION ============
@@ -89,17 +88,6 @@ FRENCH_CITIES_COORDS = {
     "saint-jean-de-la-ruelle": (47.9111, 1.8697),
 }
 
-def calculate_distance(lat1, lon1, lat2, lon2):
-    """Calcule la distance en km entre deux points GPS"""
-    R = 6371
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (math.sin(dlat / 2) ** 2 + 
-         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * 
-         math.sin(dlon / 2) ** 2)
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return round(R * c, 2)
-
 def normalize_city_name(city: str) -> str:
     """Normalise le nom d'une ville"""
     if not city:
@@ -119,14 +107,14 @@ def get_city_coordinates(city: str) -> Optional[tuple]:
             return coords
     return None
 
-# ============ SCRAPER OPTIMISÉ ============
+# ============ SCRAPER MULTI-PAGES ============
 
-class OptimizedHTTPScraper:
-    """Scraper optimisé avec rotation de sessions HTTP"""
+class MultiPageScraper:
+    """Scraper avec support multi-pages"""
     
     def __init__(self):
         self.client = None
-        self.seen_ads = set()  # Set des IDs d'annonces déjà vues
+        self.seen_ads = set()  # Set des IDs uniques
         self.running = False
         self.request_count = 0
         self.session_request_count = 0
@@ -138,7 +126,7 @@ class OptimizedHTTPScraper:
         self.total_errors = 0
     
     async def _create_new_session(self):
-        """Crée une nouvelle session HTTP complète"""
+        """Crée une nouvelle session HTTP"""
         if self.client:
             try:
                 await self.client.aclose()
@@ -177,7 +165,7 @@ class OptimizedHTTPScraper:
         return True
     
     def _get_headers(self):
-        """Génère des headers réalistes avec rotation"""
+        """Génère des headers réalistes"""
         headers = {
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             'Sec-Fetch-Dest': 'document',
@@ -197,14 +185,40 @@ class OptimizedHTTPScraper:
         return headers
     
     async def _handle_ban_recovery(self):
-        """Gestion de la récupération après ban"""
+        """Récupération après ban"""
         logger.warning(f"🚫 Ban détecté - Rotation dans {BAN_RECOVERY_DELAY}s")
         await asyncio.sleep(BAN_RECOVERY_DELAY)
         await self._create_new_session()
-        logger.info("✅ Session rotée - Reprise")
+        logger.info("✅ Session rotée")
     
-    async def get_recent_ads(self, max_ads=30):
-        """Récupère les annonces via HTTP + parsing HTML"""
+    async def scrape_all_pages(self):
+        """Scrape plusieurs pages pour trouver de nouvelles annonces"""
+        all_ads = []
+        
+        for page_num in PAGES_TO_SCRAPE:
+            logger.info(f"  📄 Page {page_num}...")
+            
+            # Délai entre pages
+            if page_num > 1:
+                delay = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
+                await asyncio.sleep(delay)
+            
+            ads = await self.get_ads_from_page(page_num)
+            if ads:
+                all_ads.extend(ads)
+                logger.info(f"     ✅ {len(ads)} annonces trouvées")
+            else:
+                logger.warning(f"     ⚠️ Aucune annonce")
+            
+            # Si ban détecté, arrêter le multi-page
+            if self.consecutive_403 >= MAX_CONSECUTIVE_403:
+                break
+        
+        logger.info(f"📊 Total: {len(all_ads)} annonces sur {len(PAGES_TO_SCRAPE)} pages")
+        return all_ads
+    
+    async def get_ads_from_page(self, page_num=1):
+        """Récupère les annonces d'une page spécifique"""
         if not BS4_AVAILABLE:
             logger.error("❌ BeautifulSoup non disponible")
             return []
@@ -212,19 +226,17 @@ class OptimizedHTTPScraper:
         self.request_count += 1
         self.session_request_count += 1
         
-        # Délai intelligent
-        if self.last_successful_request:
-            delay = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
-            await asyncio.sleep(delay)
+        # Construire l'URL avec pagination
+        if page_num == 1:
+            url = "https://www.leboncoin.fr/voitures/offres"
+        else:
+            url = f"https://www.leboncoin.fr/voitures/offres?page={page_num}"
         
         try:
             headers = self._get_headers()
-            response = await self.client.get(
-                "https://www.leboncoin.fr/voitures/offres",
-                headers=headers
-            )
+            response = await self.client.get(url, headers=headers)
             
-            # Gestion des erreurs
+            # Gestion erreurs
             if response.status_code == 403:
                 self.consecutive_403 += 1
                 self.total_errors += 1
@@ -236,7 +248,7 @@ class OptimizedHTTPScraper:
                 return []
             
             if response.status_code == 429:
-                logger.warning("⚠️ Rate limit - Rotation...")
+                logger.warning("⚠️ Rate limit")
                 await self._handle_ban_recovery()
                 return []
             
@@ -250,42 +262,41 @@ class OptimizedHTTPScraper:
             self.last_successful_request = datetime.now()
             
             html_content = response.text
-            
-            # Parser
             soup = BeautifulSoup(html_content, 'html.parser')
             
             # Chercher les annonces
             ad_elements = []
             
+            # Stratégie 1: data-qa-id
             ads = soup.find_all('a', {'data-qa-id': 'aditem_container'})
             if ads and len(ads) >= 5:
                 ad_elements = ads
             
+            # Stratégie 2: articles
             if not ad_elements:
                 ads = soup.find_all('article')
                 if ads and len(ads) >= 5:
                     ad_elements = ads
             
+            # Stratégie 3: liens
             if not ad_elements:
                 ads = soup.find_all('a', href=re.compile(r'/voitures/\d+\.htm'))
                 if ads:
                     ad_elements = ads
             
             if not ad_elements:
-                logger.warning("⚠️ Aucune annonce détectée")
                 return []
             
             # Parser les annonces
             ads_found = []
-            for idx, element in enumerate(ad_elements[:max_ads]):
+            for idx, element in enumerate(ad_elements):
                 try:
                     ad_data = self._parse_ad(element, idx, soup)
-                    if ad_data:
+                    if ad_data and ad_data.get('price', 0) > 0:  # Filtrer prix valides
                         ads_found.append(ad_data)
                 except:
                     continue
             
-            logger.info(f"✅ {len(ads_found)} annonces parsées")
             return ads_found
             
         except httpx.TimeoutException:
@@ -293,24 +304,28 @@ class OptimizedHTTPScraper:
             self.total_errors += 1
             return []
         except Exception as e:
-            logger.error(f"❌ Erreur: {str(e)[:80]}")
+            logger.error(f"❌ Erreur: {str(e)[:100]}")
             self.total_errors += 1
             return []
     
     def _parse_ad(self, element, idx, soup):
-        """Parse une annonce"""
+        """Parse une annonce avec logs détaillés"""
         try:
             # Titre
-            title = "Véhicule d'occasion"
+            title = None
             title_elem = element.find(attrs={'data-qa-id': 'aditem_title'})
             if title_elem:
                 title = title_elem.get_text(strip=True)
-            else:
+            
+            if not title:
                 h_elem = element.find(['h2', 'h3', 'p'])
                 if h_elem:
                     text = h_elem.get_text(strip=True)
                     if 10 < len(text) < 150:
                         title = text
+            
+            if not title or len(title) < 5:
+                return None
             
             # Prix
             price = 0
@@ -339,7 +354,7 @@ class OptimizedHTTPScraper:
                         except:
                             price = 0
             
-            # URL
+            # URL (IMPORTANT pour ID unique)
             url = ""
             if element.name == 'a':
                 url = element.get('href', '')
@@ -351,12 +366,19 @@ class OptimizedHTTPScraper:
             if url and not url.startswith('http'):
                 url = f"https://www.leboncoin.fr{url}"
             
-            # ID unique basé sur l'URL (meilleure détection)
-            ad_id = f"lbc_http_{idx}"
+            # ID UNIQUE basé sur l'URL
+            ad_id = None
             if url:
+                # Extraire l'ID numérique de l'URL
                 match = re.search(r'/(\d+)\.htm', url)
                 if match:
                     ad_id = f"lbc_{match.group(1)}"
+            
+            # Si pas d'ID, générer un ID basé sur titre + prix
+            if not ad_id:
+                import hashlib
+                unique_str = f"{title}_{price}"
+                ad_id = f"lbc_{hashlib.md5(unique_str.encode()).hexdigest()[:8]}"
             
             # Localisation
             location = "France"
@@ -521,7 +543,7 @@ class OptimizedHTTPScraper:
             await self.client.aclose()
 
 # Instance globale
-scraper = OptimizedHTTPScraper()
+scraper = MultiPageScraper()
 
 # ============ WEBSOCKET ============
 
@@ -554,7 +576,7 @@ async def broadcast_new_vehicle(vehicle):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gestion du cycle de vie"""
-    logger.info("🚀 AutoTrack API démarrée")
+    logger.info("🚀 AutoTrack API - Multi-Pages")
     task = asyncio.create_task(background_monitor())
     yield
     scraper.running = False
@@ -563,8 +585,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AutoTrack API",
-    version="7.1",
-    description="API optimisée pour scraping Leboncoin",
+    version="8.0",
+    description="API avec scraping multi-pages",
     lifespan=lifespan
 )
 
@@ -583,32 +605,40 @@ async def websocket_endpoint(websocket: WebSocket):
     """Endpoint WebSocket"""
     await websocket.accept()
     websocket_clients.append(websocket)
-    logger.info(f"🔌 Client WS connecté ({len(websocket_clients)})")
+    logger.info(f"🔌 WS connecté ({len(websocket_clients)})")
     
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         websocket_clients.remove(websocket)
-        logger.info(f"🔌 Client WS déconnecté")
+        logger.info(f"🔌 WS déconnecté")
 
 # ============ MONITORING ============
 
 async def background_monitor():
-    """Monitoring optimisé"""
+    """Monitoring multi-pages"""
     scraper.running = True
-    logger.info(f"⏱️ Intervalle: {SCRAPE_INTERVAL_SECONDS}s | Délais: {MIN_DELAY_SECONDS}-{MAX_DELAY_SECONDS}s")
+    logger.info(f"⏱️ Intervalle: {SCRAPE_INTERVAL_SECONDS}s | Pages: {PAGES_TO_SCRAPE}")
     
     await scraper.setup()
     
     # Scan initial
-    logger.info("🔍 Scan initial...")
+    logger.info("🔍 Scan initial (multi-pages)...")
     try:
-        initial_ads = await scraper.get_recent_ads(max_ads=30)
-        for ad in initial_ads:
+        initial_ads = await scraper.scrape_all_pages()
+        
+        # Afficher les premières annonces
+        logger.info(f"\n📋 ANNONCES DÉTECTÉES:")
+        for i, ad in enumerate(initial_ads[:10]):
+            logger.info(f"  {i+1}. {ad['title'][:60]} - {ad['price']}€ - {ad['location'][:30]}")
             scraper.seen_ads.add(ad['id'])
             database["vehicles"].insert(0, ad)
-        logger.info(f"✅ {len(initial_ads)} annonces chargées\n")
+        
+        if len(initial_ads) > 10:
+            logger.info(f"  ... et {len(initial_ads)-10} autres")
+        
+        logger.info(f"\n✅ {len(initial_ads)} annonces chargées\n")
     except Exception as e:
         logger.error(f"❌ Erreur scan initial: {str(e)}")
     
@@ -619,15 +649,15 @@ async def background_monitor():
     while scraper.running:
         scan_count += 1
         
-        logger.info(f"🔍 Scan #{scan_count}...")
+        logger.info(f"🔍 Scan #{scan_count} (multi-pages)...")
         
         try:
-            ads = await scraper.get_recent_ads(max_ads=30)
+            ads = await scraper.scrape_all_pages()
             
             new_ads = [ad for ad in ads if ad['id'] not in scraper.seen_ads]
             
             if new_ads:
-                logger.info(f"🆕 {len(new_ads)} NOUVELLE(S) ANNONCE(S)!")
+                logger.info(f"\n🆕 {len(new_ads)} NOUVELLE(S) ANNONCE(S)!")
                 scraper.total_new_ads += len(new_ads)
                 
                 for ad in new_ads:
@@ -640,20 +670,20 @@ async def background_monitor():
                 if len(database["vehicles"]) > MAX_VEHICLES_IN_MEMORY:
                     database["vehicles"] = database["vehicles"][:MAX_VEHICLES_IN_MEMORY]
             else:
-                logger.info(f"✓ Rien de nouveau")
+                logger.info(f"✓ Aucune nouvelle annonce")
             
-            # Stats tous les 10 scans
-            if scan_count % 10 == 0:
+            # Stats tous les 5 scans
+            if scan_count % 5 == 0:
                 uptime = (datetime.now() - scraper.session_created_at).total_seconds() / 60
                 logger.info(f"\n📊 STATS:")
                 logger.info(f"   • Nouvelles: {scraper.total_new_ads}")
                 logger.info(f"   • Total DB: {len(database['vehicles'])}")
+                logger.info(f"   • IDs vus: {len(scraper.seen_ads)}")
                 logger.info(f"   • Sessions: {scraper.total_sessions}")
-                logger.info(f"   • Erreurs: {scraper.total_errors}")
-                logger.info(f"   • Uptime session: {uptime:.1f}min\n")
+                logger.info(f"   • Uptime: {uptime:.1f}min\n")
             
         except Exception as e:
-            logger.error(f"❌ Erreur: {str(e)[:80]}")
+            logger.error(f"❌ Erreur: {str(e)[:100]}")
         
         logger.info(f"⏳ Pause {SCRAPE_INTERVAL_SECONDS}s...\n")
         await asyncio.sleep(SCRAPE_INTERVAL_SECONDS)
@@ -668,10 +698,11 @@ async def root():
         uptime = (datetime.now() - scraper.session_created_at).total_seconds()
     
     return {
-        "name": "AutoTrack API",
-        "version": "7.1",
+        "name": "AutoTrack API - Multi-Pages",
+        "version": "8.0",
         "status": "running",
         "vehicles_count": len(database["vehicles"]),
+        "unique_ads_seen": len(scraper.seen_ads),
         "websocket_clients": len(websocket_clients),
         "stats": {
             "total_requests": scraper.request_count,
@@ -731,6 +762,7 @@ async def get_stats():
     
     return {
         "total_vehicles": len(database["vehicles"]),
+        "unique_ads_seen": len(scraper.seen_ads),
         "scraper_running": scraper.running,
         "requests": {
             "total": scraper.request_count,
@@ -743,7 +775,6 @@ async def get_stats():
         },
         "discoveries": {
             "total_new_ads": scraper.total_new_ads,
-            "unique_ads_seen": len(scraper.seen_ads),
         }
     }
 
