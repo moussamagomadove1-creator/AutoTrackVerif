@@ -38,8 +38,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============ CONFIGURATION ============
-SCRAPE_INTERVAL_SECONDS = 15  # Plus long pour éviter les bans
+SCRAPE_INTERVAL_SECONDS = 30  # Augmenté pour éviter les bans
 SCRAPE_URL = "https://www.leboncoin.fr/voitures/offres"
+MAX_REQUESTS_BEFORE_BREAK = 2  # Seulement 2 requêtes puis pause longue
+BREAK_DURATION = 120  # 2 minutes de pause après ban
 
 # Base de données en mémoire
 database = {
@@ -49,13 +51,15 @@ database = {
 # WebSocket clients
 websocket_clients = []
 
-# User agents rotatifs
+# User agents rotatifs (plus variés)
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0',
 ]
 
 # ============ GÉOLOCALISATION ============
@@ -121,6 +125,9 @@ class LightHTTPScraper:
         self.seen_ads = set()
         self.running = False
         self.request_count = 0
+        self.consecutive_403 = 0
+        self.is_banned = False
+        self.last_successful_request = None
     
     async def setup(self):
         """Initialise le client HTTP"""
@@ -134,9 +141,11 @@ class LightHTTPScraper:
         return True
     
     def _get_headers(self):
-        """Génère des headers réalistes"""
+        """Génère des headers réalistes avec rotation"""
         user_agent = random.choice(USER_AGENTS)
-        return {
+        
+        # Ajouter de la variabilité dans les headers
+        headers = {
             'User-Agent': user_agent,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -149,6 +158,12 @@ class LightHTTPScraper:
             'Sec-Fetch-Site': 'none',
             'Cache-Control': 'max-age=0',
         }
+        
+        # Ajouter un referer aléatoire parfois
+        if random.random() > 0.5:
+            headers['Referer'] = 'https://www.google.fr/'
+        
+        return headers
     
     async def get_recent_ads(self, max_ads=30):
         """Récupère les annonces via HTTP + parsing HTML"""
@@ -156,26 +171,51 @@ class LightHTTPScraper:
             logger.error("❌ BeautifulSoup non disponible")
             return []
         
+        # Vérifier si on est banni
+        if self.is_banned:
+            logger.warning(f"⏸️ En pause (ban détecté) - Attente de {BREAK_DURATION}s...")
+            await asyncio.sleep(BREAK_DURATION)
+            self.is_banned = False
+            self.consecutive_403 = 0
+            logger.info("🔄 Reprise après pause")
+        
         self.request_count += 1
         logger.info(f"🔍 [HTTP] Récupération de {max_ads} annonces (requête #{self.request_count})...")
         
+        # Délai aléatoire avant la requête (simuler humain)
+        if self.last_successful_request:
+            delay = random.uniform(2, 5)
+            logger.info(f"⏱️ Délai anti-détection: {delay:.1f}s...")
+            await asyncio.sleep(delay)
+        
         try:
-            # Requête HTTP avec headers réalistes
+            # Requête HTTP avec headers réalistes et rotatifs
             headers = self._get_headers()
             response = await self.client.get(SCRAPE_URL, headers=headers)
             
             if response.status_code == 403:
-                logger.error("❌ Erreur 403 - Bloqué par LeBonCoin")
+                self.consecutive_403 += 1
+                logger.error(f"❌ Erreur 403 - Bloqué ({self.consecutive_403}/3)")
+                
+                # Si 3 erreurs 403 consécutives, pause longue
+                if self.consecutive_403 >= 3:
+                    logger.warning(f"🚫 BAN DÉTECTÉ - Pause de {BREAK_DURATION}s")
+                    self.is_banned = True
+                
                 return []
             
             if response.status_code == 429:
-                logger.warning("⚠️ Rate limit - Attente de 30 secondes...")
-                await asyncio.sleep(30)
+                logger.warning("⚠️ Rate limit - Pause de 60 secondes...")
+                await asyncio.sleep(60)
                 return []
             
             if response.status_code != 200:
                 logger.error(f"❌ Erreur HTTP: {response.status_code}")
                 return []
+            
+            # Succès - réinitialiser le compteur 403
+            self.consecutive_403 = 0
+            self.last_successful_request = datetime.now()
             
             html_content = response.text
             logger.info(f"✅ Page téléchargée ({len(html_content)} caractères)")
@@ -183,7 +223,7 @@ class LightHTTPScraper:
             # Parser avec BeautifulSoup
             soup = BeautifulSoup(html_content, 'html.parser')
             
-            # Chercher les annonces avec différents sélecteurs
+            # Chercher les annonces
             ad_elements = []
             
             # Stratégie 1: data-qa-id
@@ -208,24 +248,17 @@ class LightHTTPScraper:
             
             if not ad_elements:
                 logger.warning("⚠️ AUCUNE ANNONCE DÉTECTÉE dans le HTML")
-                # Sauvegarder le HTML pour debug
-                try:
-                    with open('/tmp/debug_leboncoin.html', 'w', encoding='utf-8') as f:
-                        f.write(html_content[:10000])
-                    logger.info("📄 Début du HTML sauvegardé: /tmp/debug_leboncoin.html")
-                except:
-                    pass
                 return []
             
             # Parser les annonces
             ads_found = []
             for idx, element in enumerate(ad_elements[:max_ads]):
                 try:
-                    ad_data = self._parse_ad(element, idx)
+                    ad_data = self._parse_ad(element, idx, soup)
                     if ad_data:
                         ads_found.append(ad_data)
                         if idx < 3:
-                            logger.info(f"  ✅ #{idx+1}: {ad_data['title'][:50]} - {ad_data['price']}€")
+                            logger.info(f"  ✅ #{idx+1}: {ad_data['title'][:50]} - {ad_data['price']}€ - {ad_data['location']}")
                 except Exception as e:
                     if idx < 3:
                         logger.warning(f"  ⚠️ #{idx+1}: {str(e)[:80]}")
@@ -241,8 +274,8 @@ class LightHTTPScraper:
             logger.error(f"❌ Erreur HTTP: {str(e)}")
             return []
     
-    def _parse_ad(self, element, idx):
-        """Parse une annonce depuis BeautifulSoup"""
+    def _parse_ad(self, element, idx, soup):
+        """Parse une annonce depuis BeautifulSoup avec parsing amélioré des prix"""
         try:
             # Titre
             title = "Véhicule d'occasion"
@@ -250,19 +283,52 @@ class LightHTTPScraper:
             if title_elem:
                 title = title_elem.get_text(strip=True)
             else:
-                # Fallback: chercher h2/h3
-                h_elem = element.find(['h2', 'h3'])
+                h_elem = element.find(['h2', 'h3', 'p'])
                 if h_elem:
-                    title = h_elem.get_text(strip=True)
+                    text = h_elem.get_text(strip=True)
+                    if len(text) > 10 and len(text) < 150:
+                        title = text
             
-            # Prix
+            # Prix - PARSING AMÉLIORÉ
             price = 0
+            
+            # Méthode 1: data-qa-id
             price_elem = element.find(attrs={'data-qa-id': 'aditem_price'})
             if price_elem:
                 price_text = price_elem.get_text(strip=True)
-                clean_price = re.sub(r'[^\d]', '', price_text)
-                if clean_price:
-                    price = int(clean_price)
+                price = self._extract_price(price_text)
+            
+            # Méthode 2: Chercher dans tout le texte de l'élément
+            if price == 0:
+                full_text = element.get_text()
+                # Chercher pattern "XXXX €" ou "XX XXX €"
+                price_patterns = [
+                    r'(\d{1,3}(?:\s?\d{3})*)\s*€',  # "12 500 €" ou "12500 €"
+                    r'(\d+)\s*€',  # "1500 €"
+                ]
+                
+                for pattern in price_patterns:
+                    matches = re.findall(pattern, full_text)
+                    if matches:
+                        # Prendre le premier prix trouvé
+                        price_str = matches[0].replace(' ', '').replace('\u202f', '')
+                        try:
+                            price = int(price_str)
+                            if 100 <= price <= 500000:
+                                break
+                            else:
+                                price = 0
+                        except:
+                            price = 0
+            
+            # Méthode 3: Chercher dans les spans avec classe contenant "price"
+            if price == 0:
+                price_spans = element.find_all(['span', 'p', 'div'], class_=re.compile(r'price', re.I))
+                for span in price_spans:
+                    price_text = span.get_text(strip=True)
+                    price = self._extract_price(price_text)
+                    if price > 0:
+                        break
             
             # URL
             url = ""
@@ -288,14 +354,21 @@ class LightHTTPScraper:
             loc_elem = element.find(attrs={'data-qa-id': 'aditem_location'})
             if loc_elem:
                 location = loc_elem.get_text(strip=True)
+            else:
+                # Chercher pattern ville (code postal)
+                full_text = element.get_text()
+                loc_match = re.search(r'([A-ZÀ-Ü][a-zA-ZÀ-ÿ\s\-\']+)\s*\((\d{5})\)', full_text)
+                if loc_match:
+                    location = f"{loc_match.group(1).strip()} ({loc_match.group(2)})"
             
             # Images
             images = []
             img_elements = element.find_all('img')
             for img in img_elements:
-                img_url = img.get('src', '')
-                if img_url and 'images' in img_url:
-                    images.append(img_url)
+                img_url = img.get('src', '') or img.get('data-src', '')
+                if img_url and any(x in img_url for x in ['images', 'thumbs', 'img']):
+                    if not any(x in img_url.lower() for x in ['logo', 'icon', 'favicon']):
+                        images.append(img_url)
             
             # Détections depuis le texte
             full_text = element.get_text()
@@ -332,6 +405,31 @@ class LightHTTPScraper:
         except Exception as e:
             logger.error(f"Erreur parsing annonce {idx}: {str(e)}")
             return None
+    
+    def _extract_price(self, price_text):
+        """Extrait le prix depuis un texte"""
+        if not price_text:
+            return 0
+        
+        try:
+            # Nettoyer le texte (enlever espaces insécables, espaces normaux, etc.)
+            clean_text = price_text.replace('\u202f', '').replace(' ', '').replace('\xa0', '')
+            clean_text = clean_text.replace('€', '').replace(',', '').strip()
+            
+            # Extraire les chiffres
+            numbers = re.findall(r'\d+', clean_text)
+            if numbers:
+                # Joindre tous les chiffres (pour gérer "12 500" → "12500")
+                price_str = ''.join(numbers)
+                price = int(price_str)
+                
+                # Validation
+                if 100 <= price <= 500000:
+                    return price
+            
+            return 0
+        except:
+            return 0
     
     def _detect_brand(self, text):
         brands = [
@@ -494,9 +592,10 @@ async def websocket_endpoint(websocket: WebSocket):
 # ============ MONITORING ============
 
 async def background_monitor():
-    """Monitoring en arrière-plan"""
+    """Monitoring en arrière-plan avec gestion anti-ban"""
     scraper.running = True
     logger.info(f"⏱️  Monitoring démarré (intervalle: {SCRAPE_INTERVAL_SECONDS}s)")
+    logger.info(f"🛡️ Protection anti-ban: max {MAX_REQUESTS_BEFORE_BREAK} requêtes puis pause de {BREAK_DURATION}s")
     
     await scraper.setup()
     
@@ -512,6 +611,7 @@ async def background_monitor():
     
     scan_count = 0
     total_new = 0
+    requests_in_session = 0
     
     logger.info(f"✅ Monitoring actif en mode HTTP!\n")
     
@@ -521,8 +621,17 @@ async def background_monitor():
         
         logger.info(f"[{current_time}] 🔍 Scan #{scan_count}...")
         
+        # Pause préventive après X requêtes
+        if requests_in_session >= MAX_REQUESTS_BEFORE_BREAK:
+            logger.warning(f"⏸️ Pause préventive de {BREAK_DURATION}s après {requests_in_session} requêtes...")
+            await asyncio.sleep(BREAK_DURATION)
+            requests_in_session = 0
+            logger.info("🔄 Reprise du monitoring")
+        
         try:
             ads = await scraper.get_recent_ads(max_ads=30)
+            requests_in_session += 1
+            
             new_ads = [ad for ad in ads if ad['id'] not in scraper.seen_ads]
             
             if new_ads:
@@ -541,7 +650,7 @@ async def background_monitor():
                 logger.info(f"✓ Aucune nouvelle annonce")
             
             if scan_count % 5 == 0:
-                logger.info(f"\n📊 Stats: {total_new} nouvelles | {len(database['vehicles'])} total\n")
+                logger.info(f"\n📊 Stats: {total_new} nouvelles | {len(database['vehicles'])} total | Requêtes session: {requests_in_session}/{MAX_REQUESTS_BEFORE_BREAK}\n")
             
         except Exception as e:
             logger.error(f"❌ Erreur scan: {str(e)}")
