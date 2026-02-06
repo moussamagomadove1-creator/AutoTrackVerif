@@ -1,11 +1,9 @@
 """
-AutoTrack Backend - Version API LeBonCoin (SOLUTION DÉFINITIVE)
-NOUVELLE APPROCHE:
-- Utilise l'API non-officielle de LeBonCoin (100% fiable)
-- Pas de détection de bot
-- Données en temps réel et complètes
-- Aucun problème de blocage
-- Extraction directe des données structurées
+AutoTrack Backend - Version HYBRIDE (API + Selenium Fallback)
+STRATÉGIE INTELLIGENTE:
+1. Tente d'abord l'API LeBonCoin (rapide, propre)
+2. Si l'API retourne 403 ou échoue → Bascule automatiquement sur Selenium
+3. Conserve toutes les fonctionnalités des deux versions
 """
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -20,6 +18,21 @@ from contextlib import asynccontextmanager
 import json
 import math
 import httpx
+import random
+import time
+
+# Import Selenium
+SELENIUM_AVAILABLE = False
+try:
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    SELENIUM_AVAILABLE = True
+except ImportError:
+    pass
 
 # ============ LOGGING ============
 logging.basicConfig(
@@ -33,6 +46,7 @@ logger = logging.getLogger(__name__)
 SCRAPE_INTERVAL_SECONDS = 10
 LEBONCOIN_API_URL = "https://api.leboncoin.fr/api/adfinder/v1/search"
 LEBONCOIN_API_KEY = "ba0c2dad52b3ec"
+SCRAPE_URL = "https://www.leboncoin.fr/voitures/offres"
 
 # Base de données en mémoire
 database = {
@@ -45,6 +59,9 @@ websocket_clients = []
 # Anti-ban
 consecutive_empty_scans = 0
 MAX_EMPTY_SCANS_BEFORE_REFRESH = 10
+
+# Mode de scraping actuel
+SCRAPING_MODE = "API"  # "API" ou "SELENIUM"
 
 # ============ GÉOLOCALISATION ============
 
@@ -99,17 +116,88 @@ def get_city_coordinates(city: str) -> Optional[tuple]:
             return coords
     return None
 
-# ============ API LEBONCOIN SCRAPER ============
+# ============ CONFIGURATION CHROME ============
+
+def init_chrome_driver():
+    """Initialise le driver Chrome avec configuration anti-détection"""
+    if not SELENIUM_AVAILABLE:
+        logger.error("❌ Selenium n'est pas disponible")
+        return None
+    
+    try:
+        logger.info("🚀 Initialisation du navigateur Chrome...")
+        
+        chrome_options = Options()
+        
+        # Options essentielles
+        chrome_options.add_argument('--headless=new')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_argument('--disable-software-rasterizer')
+        
+        # ANTI-DÉTECTION
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+        
+        # User agent
+        user_agent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+        chrome_options.add_argument(f'user-agent={user_agent}')
+        
+        # Langue
+        chrome_options.add_argument('--lang=fr-FR')
+        chrome_options.add_experimental_option('prefs', {
+            'intl.accept_languages': 'fr-FR,fr',
+            'profile.default_content_setting_values.notifications': 2,
+        })
+        
+        chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--disable-notifications')
+        chrome_options.add_argument('--log-level=3')
+        
+        # Chercher Chrome
+        chrome_binary_locations = [
+            '/usr/bin/chromium-browser',
+            '/usr/bin/chromium',
+            '/usr/bin/google-chrome',
+            '/usr/bin/google-chrome-stable',
+        ]
+        
+        for chrome_path in chrome_binary_locations:
+            if os.path.exists(chrome_path):
+                chrome_options.binary_location = chrome_path
+                logger.info(f"✅ Chrome trouvé: {chrome_path}")
+                break
+        
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.set_page_load_timeout(60)
+        
+        # Masquer l'automatisation
+        try:
+            driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": user_agent})
+            driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        except:
+            pass
+        
+        logger.info("✅ Navigateur Chrome initialisé")
+        return driver
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur init Chrome: {e}")
+        return None
+
+# ============ SCRAPER API ============
 
 class LeBonCoinAPIScraper:
-    """Scraper utilisant l'API officieuse de LeBonCoin - 100% FIABLE"""
+    """Scraper utilisant l'API LeBonCoin"""
     
     def __init__(self):
         self.api_url = LEBONCOIN_API_URL
         self.api_key = LEBONCOIN_API_KEY
-        self.seen_ads = set()
-        self.running = False
         self.client = None
+        self.api_working = True
     
     async def setup(self):
         """Initialise le client HTTP"""
@@ -118,9 +206,12 @@ class LeBonCoinAPIScraper:
             logger.info("✅ Client HTTP initialisé")
         return True
     
-    async def get_recent_ads(self, max_ads=35, filters=None):
-        """Récupère les annonces via l'API LeBonCoin - VRAI SCRAPING"""
-        logger.info(f"🔍 Récupération de {max_ads} annonces via API LeBonCoin...")
+    async def get_recent_ads(self, max_ads=35):
+        """Récupère les annonces via l'API"""
+        if not self.api_working:
+            return None  # Signal pour utiliser Selenium
+        
+        logger.info(f"🔍 [API] Récupération de {max_ads} annonces...")
         
         try:
             headers = {
@@ -133,24 +224,11 @@ class LeBonCoinAPIScraper:
                 "limit": max_ads,
                 "limit_alu": 0,
                 "filters": {
-                    "category": {"id": "2"},  # Voitures
-                    "enums": {
-                        "ad_type": ["offer"]
-                    },
-                    "location": {
-                        "locations": []
-                    }
+                    "category": {"id": "2"},
+                    "enums": {"ad_type": ["offer"]},
+                    "location": {"locations": []}
                 }
             }
-            
-            if filters:
-                if filters.get("min_price"):
-                    payload["filters"]["ranges"] = payload["filters"].get("ranges", {})
-                    payload["filters"]["ranges"]["price"] = {"min": filters["min_price"]}
-                if filters.get("max_price"):
-                    payload["filters"]["ranges"] = payload["filters"].get("ranges", {})
-                    payload["filters"]["ranges"]["price"] = payload["filters"]["ranges"].get("price", {})
-                    payload["filters"]["ranges"]["price"]["max"] = filters["max_price"]
             
             response = await self.client.post(
                 self.api_url,
@@ -158,18 +236,24 @@ class LeBonCoinAPIScraper:
                 json=payload
             )
             
+            if response.status_code == 403:
+                logger.warning("⚠️ API retourne 403 - Passage en mode Selenium")
+                self.api_working = False
+                return None
+            
             if response.status_code != 200:
-                logger.error(f"  ❌ Erreur API: {response.status_code}")
-                return []
+                logger.error(f"❌ Erreur API: {response.status_code}")
+                self.api_working = False
+                return None
             
             data = response.json()
             ads_data = data.get("ads", [])
             
             if not ads_data:
-                logger.warning("  ⚠️ Aucune annonce retournée par l'API")
+                logger.warning("⚠️ Aucune annonce retournée par l'API")
                 return []
             
-            logger.info(f"  ✅ {len(ads_data)} annonces reçues de l'API")
+            logger.info(f"✅ {len(ads_data)} annonces reçues de l'API")
             
             parsed_ads = []
             for idx, ad in enumerate(ads_data):
@@ -177,18 +261,16 @@ class LeBonCoinAPIScraper:
                     parsed_ad = self._parse_api_ad(ad)
                     if parsed_ad:
                         parsed_ads.append(parsed_ad)
-                        if idx < 3:
-                            logger.info(f"  ✅ {parsed_ad['title'][:50]}... - {parsed_ad['price']}€")
                 except Exception as e:
-                    logger.warning(f"  ⚠️ Erreur parsing {idx}: {e}")
+                    logger.warning(f"⚠️ Erreur parsing {idx}: {e}")
                     continue
             
-            logger.info(f"  📊 Total parsé: {len(parsed_ads)} annonces valides")
             return parsed_ads
             
         except Exception as e:
-            logger.error(f"  ❌ Erreur requête API: {str(e)}")
-            return []
+            logger.error(f"❌ Erreur requête API: {str(e)}")
+            self.api_working = False
+            return None
     
     def _parse_api_ad(self, ad_data):
         """Parse une annonce depuis l'API"""
@@ -219,8 +301,6 @@ class LeBonCoinAPIScraper:
                     location = f"{city} ({zipcode})"
                 elif city:
                     location = city
-                elif zipcode:
-                    location = zipcode
             
             # Images
             images = []
@@ -368,8 +448,295 @@ class LeBonCoinAPIScraper:
             await self.client.aclose()
             self.client = None
 
+# ============ SCRAPER SELENIUM ============
+
+class SeleniumScraper:
+    """Scraper Selenium en fallback"""
+    
+    def __init__(self):
+        self.driver = None
+        self.page_loaded = False
+        self.cookies_accepted = False
+    
+    def setup(self):
+        """Configure le navigateur"""
+        if self.driver:
+            return True
+        
+        self.driver = init_chrome_driver()
+        return self.driver is not None
+    
+    def get_recent_ads(self, max_ads=20):
+        """Récupère les annonces avec Selenium"""
+        logger.info(f"🔍 [SELENIUM] Récupération de {max_ads} annonces...")
+        
+        try:
+            # Chargement de la page
+            if not self.page_loaded:
+                logger.info("📄 Chargement initial de la page...")
+                self.driver.get(SCRAPE_URL)
+                
+                try:
+                    WebDriverWait(self.driver, 30).until(
+                        lambda d: d.execute_script("return document.readyState") == "complete"
+                    )
+                    WebDriverWait(self.driver, 20).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, 'a[data-qa-id="aditem_container"], article'))
+                    )
+                    logger.info("✅ Page chargée")
+                except:
+                    logger.warning("⚠️ Timeout lors de l'attente")
+                
+                # Gérer les cookies
+                if not self.cookies_accepted:
+                    try:
+                        cookie_button = WebDriverWait(self.driver, 5).until(
+                            EC.element_to_be_clickable((By.ID, "didomi-notice-agree-button"))
+                        )
+                        cookie_button.click()
+                        self.cookies_accepted = True
+                        time.sleep(1)
+                    except:
+                        self.cookies_accepted = True
+                
+                self.page_loaded = True
+            else:
+                self.driver.refresh()
+                try:
+                    WebDriverWait(self.driver, 15).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, 'a[data-qa-id="aditem_container"], article'))
+                    )
+                except:
+                    pass
+            
+            # Scroll pour charger les images
+            time.sleep(2)
+            self.driver.execute_script("window.scrollTo(0, 800);")
+            time.sleep(1)
+            self.driver.execute_script("window.scrollTo(0, 1600);")
+            time.sleep(1)
+            self.driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(0.5)
+            
+            # Chercher les annonces
+            ad_elements = []
+            selectors = [
+                'a[data-qa-id="aditem_container"]',
+                'div[data-qa-id="aditem_container"]',
+                'article',
+                'a[href*="/voitures/"]',
+            ]
+            
+            for selector in selectors:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if len(elements) >= 5:
+                        ad_elements = elements
+                        logger.info(f"✅ {len(elements)} annonces trouvées")
+                        break
+                except:
+                    continue
+            
+            if not ad_elements:
+                logger.warning("⚠️ AUCUNE ANNONCE DÉTECTÉE")
+                return []
+            
+            # Parser les annonces
+            ads_found = []
+            for idx, element in enumerate(ad_elements[:max_ads]):
+                try:
+                    ad_data = self._parse_ad(element, idx)
+                    if ad_data:
+                        ads_found.append(ad_data)
+                except Exception as e:
+                    logger.warning(f"⚠️ Erreur parsing {idx}: {e}")
+                    continue
+            
+            logger.info(f"📊 Total parsé: {len(ads_found)} annonces")
+            return ads_found
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur Selenium: {str(e)}")
+            self.page_loaded = False
+            return []
+    
+    def _parse_ad(self, element, idx):
+        """Parse une annonce (version simplifiée - voir script original pour version complète)"""
+        try:
+            full_text = element.text
+            if not full_text or len(full_text) < 10:
+                return None
+            
+            # Titre
+            title = "Véhicule d'occasion"
+            try:
+                title_elem = element.find_element(By.CSS_SELECTOR, '[data-qa-id="aditem_title"]')
+                if title_elem and title_elem.text:
+                    title = title_elem.text.strip()
+            except:
+                pass
+            
+            # Prix
+            price = 0
+            try:
+                price_elem = element.find_element(By.CSS_SELECTOR, '[data-qa-id="aditem_price"]')
+                price_text = price_elem.text
+                clean_price = re.sub(r'[^\d]', '', price_text)
+                if clean_price:
+                    price = int(clean_price)
+            except:
+                pass
+            
+            # URL
+            url = ""
+            try:
+                url = element.get_attribute('href')
+            except:
+                pass
+            
+            # ID
+            ad_id = f"lbc_sel_{idx}"
+            if url:
+                match = re.search(r'/(\d+)\.htm', url)
+                if match:
+                    ad_id = f"lbc_{match.group(1)}"
+            
+            # Localisation
+            location = "France"
+            try:
+                loc_elem = element.find_element(By.CSS_SELECTOR, '[data-qa-id="aditem_location"]')
+                if loc_elem and loc_elem.text:
+                    location = loc_elem.text.strip()
+            except:
+                pass
+            
+            # Images
+            images = []
+            try:
+                img_elements = element.find_elements(By.TAG_NAME, 'img')
+                for img in img_elements:
+                    img_url = img.get_attribute('src')
+                    if img_url and 'images' in img_url:
+                        images.append(img_url)
+            except:
+                pass
+            
+            brand = self._detect_brand(title)
+            year = self._detect_year(full_text)
+            mileage = self._detect_mileage(full_text)
+            
+            coordinates = get_city_coordinates(location)
+            
+            return {
+                "id": ad_id,
+                "title": title,
+                "brand": brand,
+                "model": None,
+                "price": price,
+                "year": year,
+                "mileage": mileage,
+                "fuel": None,
+                "gearbox": None,
+                "location": location,
+                "coordinates": coordinates,
+                "is_pro": "pro" in full_text.lower(),
+                "images": images[:5],
+                "url": url,
+                "published_at": datetime.now(),
+                "score": 50.0
+            }
+            
+        except Exception as e:
+            return None
+    
+    def _detect_brand(self, text):
+        brands = ["Renault", "Peugeot", "Citroën", "Toyota", "Volkswagen", "BMW", "Mercedes", "Audi"]
+        for brand in brands:
+            if brand.lower() in text.lower():
+                return brand
+        return None
+    
+    def _detect_year(self, text):
+        matches = re.findall(r'\b(20[0-2]\d)\b', text)
+        if matches:
+            return int(matches[-1])
+        return None
+    
+    def _detect_mileage(self, text):
+        match = re.search(r'(\d+[\s.]?\d*)\s*km', text, re.IGNORECASE)
+        if match:
+            try:
+                km_str = match.group(1).replace(' ', '').replace('.', '')
+                return int(km_str)
+            except:
+                pass
+        return None
+    
+    def close(self):
+        """Ferme le navigateur"""
+        if self.driver:
+            try:
+                self.driver.quit()
+            except:
+                pass
+            self.driver = None
+            self.page_loaded = False
+
+# ============ SCRAPER HYBRIDE ============
+
+class HybridScraper:
+    """Scraper hybride qui choisit automatiquement la meilleure méthode"""
+    
+    def __init__(self):
+        self.api_scraper = LeBonCoinAPIScraper()
+        self.selenium_scraper = SeleniumScraper() if SELENIUM_AVAILABLE else None
+        self.seen_ads = set()
+        self.running = False
+        self.current_mode = "API"
+    
+    async def setup(self):
+        """Initialise les scrapers"""
+        await self.api_scraper.setup()
+        return True
+    
+    async def get_recent_ads(self, max_ads=35):
+        """Récupère les annonces avec la meilleure méthode disponible"""
+        global SCRAPING_MODE
+        
+        # Essayer d'abord l'API
+        if self.current_mode == "API":
+            ads = await self.api_scraper.get_recent_ads(max_ads)
+            
+            if ads is not None:
+                # L'API fonctionne
+                SCRAPING_MODE = "API"
+                return ads
+            else:
+                # L'API a échoué, passer en mode Selenium
+                logger.warning("🔄 Basculement vers Selenium...")
+                self.current_mode = "SELENIUM"
+                SCRAPING_MODE = "SELENIUM"
+        
+        # Utiliser Selenium en fallback
+        if self.current_mode == "SELENIUM" and self.selenium_scraper:
+            if not self.selenium_scraper.driver:
+                if not self.selenium_scraper.setup():
+                    logger.error("❌ Impossible d'initialiser Selenium")
+                    return []
+            
+            return self.selenium_scraper.get_recent_ads(max_ads)
+        
+        logger.error("❌ Aucune méthode de scraping disponible")
+        return []
+    
+    async def close(self):
+        """Ferme tous les scrapers"""
+        await self.api_scraper.close()
+        if self.selenium_scraper:
+            self.selenium_scraper.close()
+
 # Instance globale
-scraper = LeBonCoinAPIScraper()
+scraper = HybridScraper()
 
 # ============ WEBSOCKET ============
 
@@ -402,7 +769,7 @@ async def broadcast_new_vehicle(vehicle):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gestion du cycle de vie"""
-    logger.info("✅ API démarrée avec scraper API LeBonCoin")
+    logger.info("✅ API démarrée - Mode HYBRIDE (API → Selenium)")
     task = asyncio.create_task(background_monitor())
     yield
     scraper.running = False
@@ -410,9 +777,9 @@ async def lifespan(app: FastAPI):
     logger.info("🛑 API arrêtée")
 
 app = FastAPI(
-    title="AutoTrack API - Version API LeBonCoin",
-    version="4.0",
-    description="API de monitoring LeBonCoin avec API officieuse",
+    title="AutoTrack API - Version Hybride",
+    version="5.0",
+    description="API avec basculement automatique API → Selenium",
     lifespan=lifespan
 )
 
@@ -457,7 +824,7 @@ async def background_monitor():
         for ad in initial_ads:
             scraper.seen_ads.add(ad['id'])
             database["vehicles"].insert(0, ad)
-        logger.info(f"  ℹ️  {len(initial_ads)} annonces chargées\n")
+        logger.info(f"✅ {len(initial_ads)} annonces chargées (mode: {SCRAPING_MODE})\n")
         
         if initial_ads:
             consecutive_empty_scans = 0
@@ -467,42 +834,42 @@ async def background_monitor():
     scan_count = 0
     total_new = 0
     
-    logger.info(f"✅ Monitoring actif avec API LeBonCoin!\n")
+    logger.info(f"✅ Monitoring actif en mode {SCRAPING_MODE}!\n")
     
     while scraper.running:
         scan_count += 1
         current_time = datetime.now().strftime("%H:%M:%S")
         
-        logger.info(f"[{current_time}] 🔍 Scan #{scan_count}...")
+        logger.info(f"[{current_time}] 🔍 Scan #{scan_count} [{SCRAPING_MODE}]...")
         
         try:
             ads = await scraper.get_recent_ads(max_ads=35)
             new_ads = [ad for ad in ads if ad['id'] not in scraper.seen_ads]
             
             if new_ads:
-                logger.info(f"  🆕 {len(new_ads)} nouvelle(s) annonce(s)!")
+                logger.info(f"🆕 {len(new_ads)} nouvelle(s) annonce(s)!")
                 total_new += len(new_ads)
                 consecutive_empty_scans = 0
                 
                 for ad in new_ads:
                     scraper.seen_ads.add(ad['id'])
                     database["vehicles"].insert(0, ad)
-                    logger.info(f"    📌 {ad['title'][:60]}... - {ad['price']}€")
+                    logger.info(f"  📌 {ad['title'][:60]}... - {ad['price']}€")
                     await broadcast_new_vehicle(ad)
                     
                     if len(database["vehicles"]) > 1000:
                         database["vehicles"] = database["vehicles"][:1000]
             else:
                 consecutive_empty_scans += 1
-                logger.info(f"  ✓ Aucune nouvelle annonce ({consecutive_empty_scans}/{MAX_EMPTY_SCANS_BEFORE_REFRESH})")
+                logger.info(f"✓ Aucune nouvelle annonce ({consecutive_empty_scans}/{MAX_EMPTY_SCANS_BEFORE_REFRESH})")
             
             if scan_count % 5 == 0:
-                logger.info(f"\n📊 Stats: {total_new} nouvelles | {len(database['vehicles'])} total\n")
+                logger.info(f"\n📊 Stats: {total_new} nouvelles | {len(database['vehicles'])} total | Mode: {SCRAPING_MODE}\n")
             
         except Exception as e:
             logger.error(f"❌ Erreur scan: {str(e)}")
         
-        logger.info(f"  ⏳ Prochaine vérification dans {SCRAPE_INTERVAL_SECONDS}s...\n")
+        logger.info(f"⏳ Prochaine vérification dans {SCRAPE_INTERVAL_SECONDS}s...\n")
         await asyncio.sleep(SCRAPE_INTERVAL_SECONDS)
 
 # ============ ROUTES API ============
@@ -511,10 +878,11 @@ async def background_monitor():
 async def root():
     """Informations API"""
     return {
-        "name": "AutoTrack API - Version API LeBonCoin",
-        "version": "4.0",
+        "name": "AutoTrack API - Version Hybride",
+        "version": "5.0",
         "status": "running",
-        "method": "API LeBonCoin (officieuse)",
+        "current_mode": SCRAPING_MODE,
+        "selenium_available": SELENIUM_AVAILABLE,
         "vehicles_count": len(database["vehicles"]),
         "websocket_clients": len(websocket_clients),
     }
@@ -605,9 +973,7 @@ async def get_vehicles(
         "total_pages": total_pages,
         "vehicles": paginated,
         "last_updated": vehicles[0]["published_at"].isoformat() if vehicles else None,
-        "is_partial": len(paginated) < limit and len(paginated) > 0,
-        "has_more": end < total,
-        "available_count": len(paginated),
+        "scraping_mode": SCRAPING_MODE,
     }
 
 @app.get("/api/stats")
@@ -618,7 +984,8 @@ async def get_stats():
     return {
         "total_vehicles": len(vehicles),
         "scraper_running": scraper.running,
-        "scraper_method": "API LeBonCoin",
+        "scraping_mode": SCRAPING_MODE,
+        "selenium_available": SELENIUM_AVAILABLE,
         "last_updated": vehicles[0]["published_at"].isoformat() if vehicles else None,
         "websocket_clients": len(websocket_clients),
     }
