@@ -548,11 +548,17 @@ class SeleniumScraper:
                     ad_data = self._parse_ad(element, idx)
                     if ad_data:
                         ads_found.append(ad_data)
+                        # Log détaillé pour les 3 premières annonces
+                        if idx < 3:
+                            logger.info(f"  ✅ #{idx+1}: {ad_data['title'][:50]} - {ad_data['price']}€ - {ad_data['location']}")
+                    else:
+                        if idx < 3:
+                            logger.warning(f"  ❌ #{idx+1}: Parsing retourné None")
                 except Exception as e:
-                    logger.warning(f"⚠️ Erreur parsing {idx}: {e}")
+                    logger.warning(f"  ⚠️ #{idx+1}: Erreur: {str(e)[:80]}")
                     continue
             
-            logger.info(f"📊 Total parsé: {len(ads_found)} annonces")
+            logger.info(f"📊 Total parsé: {len(ads_found)}/{len(ad_elements[:max_ads])} annonces")
             return ads_found
             
         except Exception as e:
@@ -560,117 +566,402 @@ class SeleniumScraper:
             self.page_loaded = False
             return []
     
+    def _extract_images(self, element):
+        """Extrait les URLs des images"""
+        images = []
+        try:
+            img_elements = element.find_elements(By.TAG_NAME, 'img')
+            for img in img_elements:
+                img_url = img.get_attribute('src')
+                if img_url and ('thumbs' in img_url or 'images' in img_url or 'img' in img_url):
+                    if 'thumbs' in img_url:
+                        img_url = img_url.replace('thumbs', 'images')
+                    images.append(img_url)
+            
+            images = list(dict.fromkeys(images))
+            valid_images = []
+            for img in images:
+                if (img.startswith('http') and 
+                    not any(x in img.lower() for x in ['logo', 'icon', 'favicon', 'sprite', 'blank'])):
+                    valid_images.append(img)
+            
+            return valid_images[:10]
+        except:
+            return []
+    
+    def _extract_title_improved(self, element, full_text):
+        """Extraction du titre avec plusieurs stratégies"""
+        title = None
+        
+        # Stratégie 1: Sélecteur standard
+        try:
+            title_elem = element.find_element(By.CSS_SELECTOR, '[data-qa-id="aditem_title"]')
+            if title_elem and title_elem.text and len(title_elem.text) > 5:
+                return title_elem.text.strip()
+        except:
+            pass
+        
+        # Stratégie 2: Autres sélecteurs
+        title_selectors = [
+            'p[data-qa-id="aditem_title"]',
+            'h2', 'h3',
+            '[class*="title"]',
+            '[class*="Title"]',
+        ]
+        
+        for selector in title_selectors:
+            try:
+                elem = element.find_element(By.CSS_SELECTOR, selector)
+                if elem and elem.text and len(elem.text) > 5:
+                    return elem.text.strip()
+            except:
+                continue
+        
+        # Stratégie 3: Extraction depuis le texte
+        if full_text:
+            lines = [line.strip() for line in full_text.split('\n') if line.strip()]
+            for line in lines:
+                if any(indicator in line for indicator in ['€', 'km', ':', 'Hier', 'Aujourd\'hui']):
+                    continue
+                if 10 < len(line) < 150 and re.search(r'[a-zA-Z]{3,}', line):
+                    return line[:100]
+        
+        # Stratégie 4: Marque + modèle
+        if full_text:
+            brand = self._detect_brand(full_text)
+            if brand:
+                pattern = re.compile(re.escape(brand) + r"\s+([A-Z][a-zA-Z0-9\s-]+)", re.IGNORECASE)
+                match = pattern.search(full_text)
+                if match:
+                    model_part = match.group(1).strip()
+                    model_words = model_part.split()[:3]
+                    return f"{brand} {' '.join(model_words)}"
+        
+        # Stratégie 5: URL
+        try:
+            url = element.get_attribute('href')
+            if url:
+                match = re.search(r'/([^/]+)\.htm', url)
+                if match:
+                    slug = match.group(1)
+                    title = slug.replace('-', ' ').replace('_', ' ')
+                    title = ' '.join(word.capitalize() for word in title.split())
+                    if len(title) > 10:
+                        return title[:100]
+        except:
+            pass
+        
+        return "Véhicule d'occasion"
+    
+    def _extract_location_improved(self, element, full_text):
+        """Extraction de la ville avec multiples stratégies"""
+        location = None
+        
+        # Stratégie 0: Chercher les paragraphes avec classe contenant "text"
+        try:
+            location_elems = element.find_elements(By.CSS_SELECTOR, 'p[class*="text"], span[class*="text"]')
+            for elem in location_elems:
+                text = elem.text.strip()
+                if re.search(r'\b\d{5}\b', text):
+                    if any(x in text.lower() for x in ['favori', 'favorite', 'retirée']):
+                        continue
+                    if 5 < len(text) < 80:
+                        cleaned = self._clean_location(text)
+                        if cleaned and len(cleaned) > 2:
+                            return cleaned
+        except:
+            pass
+        
+        # Stratégie 1: Sélecteurs standards
+        location_selectors = [
+            '[data-qa-id="aditem_location"]',
+            'p[data-qa-id="aditem_location"]',
+            '[data-test-id="location"]',
+            'div[class*="location"]',
+            'span[class*="location"]',
+            'p[class*="location"]',
+        ]
+        
+        for selector in location_selectors:
+            try:
+                loc_elem = element.find_element(By.CSS_SELECTOR, selector)
+                if loc_elem and loc_elem.text:
+                    location_raw = loc_elem.text.strip()
+                    if any(x in location_raw.lower() for x in ['favori', 'favorite', 'retirée']):
+                        continue
+                    if len(location_raw) > 2:
+                        location = self._clean_location(location_raw)
+                        if location and len(location) > 2:
+                            return location
+            except:
+                continue
+        
+        # Stratégie 2: Patterns dans le texte
+        if full_text:
+            lines = [line.strip() for line in full_text.split('\n') if line.strip()]
+            filtered_lines = [line for line in lines if not any(x in line.lower() for x in ['favori', 'favorite'])]
+            
+            for line in filtered_lines:
+                # Pattern: Ville + code postal
+                match = re.search(r'([A-ZÀ-Ü][a-zA-ZÀ-ÿ\s\-\']{2,})\s*\((\d{5})\)', line)
+                if match:
+                    city = match.group(1).strip()
+                    postal = match.group(2)
+                    if len(city) > 2:
+                        return f"{city} ({postal})"
+                
+                # Pattern: Ville seule
+                if re.match(r'^[A-ZÀ-Ü][a-zA-ZÀ-ÿ\s\-\']{2,40}$', line):
+                    if not any(keyword in line.lower() for keyword in 
+                              ['hier', 'aujourd', 'pro', 'urgent', 'occasion', 'diesel', 'essence']):
+                        if re.search(r'[a-zA-Z]{2,}', line):
+                            location = self._clean_location(line)
+                            if location and len(location) > 2:
+                                return location
+        
+        return "France"
+    
+    def _clean_location(self, location_raw):
+        """Nettoie une localisation extraite"""
+        if not location_raw:
+            return None
+        
+        raw_lower = location_raw.lower()
+        if any(x in raw_lower for x in ['favori', 'favorite', 'retirée']):
+            return None
+        if '•' in location_raw:
+            return None
+        
+        remove_patterns = [
+            r'\d+[\s.]?\d*\s*km\b',
+            r'Aujourd\'hui.*',
+            r'Hier.*',
+            r'\d{2}:\d{2}',
+        ]
+        
+        location_clean = location_raw
+        for pattern in remove_patterns:
+            location_clean = re.sub(pattern, '', location_clean, flags=re.IGNORECASE)
+        
+        location_clean = ' '.join(location_clean.split()).strip()
+        
+        if location_clean and not location_clean.replace(' ', '').replace('-', '').isdigit():
+            if len(location_clean) > 2:
+                return location_clean
+        
+        return None
+    
     def _parse_ad(self, element, idx):
-        """Parse une annonce (version simplifiée - voir script original pour version complète)"""
+        """Parse une annonce complète"""
         try:
             full_text = element.text
             if not full_text or len(full_text) < 10:
                 return None
             
             # Titre
-            title = "Véhicule d'occasion"
-            try:
-                title_elem = element.find_element(By.CSS_SELECTOR, '[data-qa-id="aditem_title"]')
-                if title_elem and title_elem.text:
-                    title = title_elem.text.strip()
-            except:
-                pass
+            title = self._extract_title_improved(element, full_text)
             
             # Prix
             price = 0
+            price_text = ""
             try:
-                price_elem = element.find_element(By.CSS_SELECTOR, '[data-qa-id="aditem_price"]')
-                price_text = price_elem.text
-                clean_price = re.sub(r'[^\d]', '', price_text)
-                if clean_price:
-                    price = int(clean_price)
+                price_selectors = [
+                    '[data-qa-id="aditem_price"]',
+                    'span[class*="price"]',
+                    'p[class*="price"]',
+                ]
+                
+                for selector in price_selectors:
+                    try:
+                        price_elem = element.find_element(By.CSS_SELECTOR, selector)
+                        price_text = price_elem.text
+                        if price_text and '€' in price_text:
+                            break
+                    except:
+                        continue
+                
+                if not price_text or '€' not in price_text:
+                    lines = full_text.split('\n')
+                    for line in lines:
+                        if '€' in line:
+                            price_match = re.search(r'(\d[\d\s\.\u202f,]*)\s*€', line)
+                            if price_match:
+                                price_text = price_match.group(1)
+                                break
             except:
                 pass
+            
+            try:
+                clean_price = re.sub(r'[^\d]', '', price_text.replace('\u202f', ''))
+                if clean_price:
+                    price = int(clean_price)
+                    if price > 500000 or price < 100:
+                        price = 0
+            except:
+                price = 0
             
             # URL
             url = ""
             try:
                 url = element.get_attribute('href')
+                if not url:
+                    link = element.find_element(By.TAG_NAME, 'a')
+                    url = link.get_attribute('href')
             except:
-                pass
+                url = f"https://www.leboncoin.fr/voitures/{idx}"
             
             # ID
-            ad_id = f"lbc_sel_{idx}"
+            ad_id = ""
             if url:
                 match = re.search(r'/(\d+)\.htm', url)
                 if match:
                     ad_id = f"lbc_{match.group(1)}"
             
+            if not ad_id:
+                import hashlib
+                ad_id = hashlib.md5(f"{title}_{price}_{idx}".encode()).hexdigest()[:16]
+            
             # Localisation
-            location = "France"
-            try:
-                loc_elem = element.find_element(By.CSS_SELECTOR, '[data-qa-id="aditem_location"]')
-                if loc_elem and loc_elem.text:
-                    location = loc_elem.text.strip()
-            except:
-                pass
+            location = self._extract_location_improved(element, full_text)
             
             # Images
-            images = []
-            try:
-                img_elements = element.find_elements(By.TAG_NAME, 'img')
-                for img in img_elements:
-                    img_url = img.get_attribute('src')
-                    if img_url and 'images' in img_url:
-                        images.append(img_url)
-            except:
-                pass
+            images = self._extract_images(element)
             
-            brand = self._detect_brand(title)
-            year = self._detect_year(full_text)
+            # Détections
+            brand = self._detect_brand(title + " " + full_text)
+            model = self._detect_model(title + " " + full_text, brand)
+            year = self._detect_year(title + " " + full_text)
             mileage = self._detect_mileage(full_text)
+            fuel = self._detect_fuel(title + " " + full_text)
+            gearbox = self._detect_gearbox(title + " " + full_text)
+            is_pro = "pro" in full_text.lower()
+            score = self._calculate_score(year, mileage, price, is_pro)
             
+            # Coordonnées GPS
             coordinates = get_city_coordinates(location)
             
             return {
                 "id": ad_id,
                 "title": title,
                 "brand": brand,
-                "model": None,
+                "model": model,
                 "price": price,
                 "year": year,
                 "mileage": mileage,
-                "fuel": None,
-                "gearbox": None,
+                "fuel": fuel,
+                "gearbox": gearbox,
                 "location": location,
                 "coordinates": coordinates,
-                "is_pro": "pro" in full_text.lower(),
-                "images": images[:5],
+                "is_pro": is_pro,
+                "images": images,
                 "url": url,
                 "published_at": datetime.now(),
-                "score": 50.0
+                "score": score
             }
             
         except Exception as e:
+            logger.error(f"Erreur parsing annonce {idx}: {str(e)}")
             return None
     
     def _detect_brand(self, text):
-        brands = ["Renault", "Peugeot", "Citroën", "Toyota", "Volkswagen", "BMW", "Mercedes", "Audi"]
+        """Détecte la marque"""
+        brands = [
+            "Renault", "Peugeot", "Citroën", "Toyota", "Volkswagen", "Honda", "Ford",
+            "BMW", "Mercedes", "Audi", "Fiat", "Kia", "Hyundai", "Nissan", "Opel",
+            "Mazda", "Volvo", "Tesla", "Jeep", "Dacia", "Skoda", "SEAT", "Suzuki",
+        ]
+        text_lower = text.lower()
         for brand in brands:
-            if brand.lower() in text.lower():
+            if brand.lower() in text_lower:
                 return brand
         return None
     
+    def _detect_model(self, text, brand):
+        """Détecte le modèle"""
+        if not brand:
+            return None
+        try:
+            pattern = re.compile(re.escape(brand) + r"\s+(.+?)(?:\s*[-–]|\s+\d{4}|$)", re.IGNORECASE)
+            m = pattern.search(text)
+            if m:
+                model_part = m.group(1).strip()
+                model_words = model_part.split()[:3]
+                return " ".join(model_words)
+        except:
+            pass
+        return None
+    
     def _detect_year(self, text):
-        matches = re.findall(r'\b(20[0-2]\d)\b', text)
+        """Détecte l'année"""
+        matches = re.findall(r'\b(19[89]\d|20[0-2]\d)\b', text)
         if matches:
             return int(matches[-1])
         return None
     
     def _detect_mileage(self, text):
-        match = re.search(r'(\d+[\s.]?\d*)\s*km', text, re.IGNORECASE)
-        if match:
-            try:
-                km_str = match.group(1).replace(' ', '').replace('.', '')
-                return int(km_str)
-            except:
-                pass
+        """Détecte le kilométrage"""
+        patterns = [r'(\d+[\s.]?\d*)\s*km(?![²³])']
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                try:
+                    km_str = match.group(1).replace(' ', '').replace('.', '')
+                    km = int(km_str)
+                    if 0 <= km <= 999999:
+                        return km
+                except:
+                    continue
         return None
+    
+    def _detect_fuel(self, text):
+        """Détecte le carburant"""
+        text_lower = text.lower()
+        if "électrique" in text_lower:
+            return "électrique"
+        if "hybride" in text_lower:
+            return "hybride"
+        if "diesel" in text_lower:
+            return "diesel"
+        if "essence" in text_lower:
+            return "essence"
+        return None
+    
+    def _detect_gearbox(self, text):
+        """Détecte la boîte de vitesse"""
+        text_lower = text.lower()
+        if "automatique" in text_lower:
+            return "automatique"
+        if "manuelle" in text_lower:
+            return "manuelle"
+        return None
+    
+    def _calculate_score(self, year, mileage, price, is_pro):
+        """Calcule un score de qualité"""
+        score = 50.0
+        
+        if year:
+            if year >= 2022:
+                score += 20
+            elif year >= 2020:
+                score += 15
+            elif year >= 2018:
+                score += 10
+        
+        if mileage is not None:
+            if mileage < 20000:
+                score += 20
+            elif mileage < 50000:
+                score += 15
+            elif mileage < 100000:
+                score += 10
+        
+        if is_pro:
+            score -= 5
+        
+        if 5000 <= price <= 30000:
+            score += 5
+        
+        return round(min(max(score, 0), 100), 1)
     
     def close(self):
         """Ferme le navigateur"""
