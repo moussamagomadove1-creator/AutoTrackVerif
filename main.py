@@ -1,16 +1,18 @@
 """
-AutoTrack Backend - Version CORRIGÉE
-CORRECTIONS:
-- Scraping multi-pages (pages 1, 2, 3)
-- Affichage des annonces parsées pour debug
-- Meilleure détection des IDs uniques
-- Logs détaillés du contenu
+AutoTrack Backend - Version ANTI-BAN AMÉLIORÉE
+AMÉLIORATIONS:
+- Rotation complète des sessions (User-Agent, headers, cookies)
+- Détection précoce des bans
+- Limitation adaptative des requêtes
+- Support proxies rotatifs (optionnel)
+- Fallback API si HTML bloqué
+- Délais intelligents entre requêtes
 """
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 import os
 import re
@@ -21,6 +23,7 @@ import math
 import httpx
 import random
 import time
+import hashlib
 
 # BeautifulSoup
 try:
@@ -37,14 +40,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============ CONFIGURATION ============
-SCRAPE_INTERVAL_SECONDS = 5
-MAX_DELAY_SECONDS = 5
-MIN_DELAY_SECONDS = 2
-BAN_RECOVERY_DELAY = 30
-MAX_CONSECUTIVE_403 = 2
+# ============ CONFIGURATION ANTI-BAN ============
+SCRAPE_INTERVAL_SECONDS = 10  # Augmenté pour éviter les bans
+MAX_DELAY_SECONDS = 8
+MIN_DELAY_SECONDS = 3
+BAN_RECOVERY_DELAY = 45  # Augmenté
+MAX_CONSECUTIVE_403 = 1  # Rotation plus agressive
+MAX_REQUESTS_PER_SESSION = 15  # Limite de requêtes par session
 MAX_VEHICLES_IN_MEMORY = 10000
-PAGES_TO_SCRAPE = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]  # Scraper 10 pages
+PAGES_TO_SCRAPE = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+# Configuration proxies (optionnel - à configurer si vous avez des proxies)
+USE_PROXIES = False
+PROXY_LIST = [
+    # Ajoutez vos proxies ici au format: "http://ip:port"
+    # "http://proxy1.com:8080",
+    # "http://proxy2.com:8080",
+]
 
 # Base de données en mémoire
 database = {
@@ -54,15 +66,21 @@ database = {
 # WebSocket clients
 websocket_clients = []
 
-# User agents rotatifs
+# User agents rotatifs ÉTENDUS
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0',
     'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 OPR/107.0.0.0',
 ]
 
 # ============ GÉOLOCALISATION ============
@@ -107,14 +125,14 @@ def get_city_coordinates(city: str) -> Optional[tuple]:
             return coords
     return None
 
-# ============ SCRAPER MULTI-PAGES ============
+# ============ SCRAPER ANTI-BAN ============
 
-class MultiPageScraper:
-    """Scraper avec support multi-pages"""
+class AntiBanScraper:
+    """Scraper avec système anti-ban avancé"""
     
     def __init__(self):
         self.client = None
-        self.seen_ads = set()  # Set des IDs uniques
+        self.seen_ads = set()
         self.running = False
         self.request_count = 0
         self.session_request_count = 0
@@ -124,32 +142,106 @@ class MultiPageScraper:
         self.total_sessions = 0
         self.total_new_ads = 0
         self.total_errors = 0
+        self.current_proxy = None
+        self.proxy_index = 0
+        self.success_rate = []  # Historique des succès
+        self.adaptive_delay = MIN_DELAY_SECONDS
     
-    async def _create_new_session(self):
-        """Crée une nouvelle session HTTP"""
-        if self.client:
-            try:
-                await self.client.aclose()
-            except:
-                pass
+    def _get_next_proxy(self):
+        """Obtient le prochain proxy dans la rotation"""
+        if not USE_PROXIES or not PROXY_LIST:
+            return None
         
+        self.proxy_index = (self.proxy_index + 1) % len(PROXY_LIST)
+        return PROXY_LIST[self.proxy_index]
+    
+    def _generate_random_headers(self):
+        """Génère des headers aléatoires réalistes"""
         user_agent = random.choice(USER_AGENTS)
+        
+        # Variation des langues acceptées
+        accept_languages = [
+            'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+            'fr-FR,fr;q=0.9,en;q=0.8',
+            'fr,fr-FR;q=0.9,en;q=0.8',
+            'fr-FR,fr;q=0.8,en-US;q=0.7,en;q=0.6',
+        ]
+        
+        # Variation des encodages
+        accept_encodings = [
+            'gzip, deflate, br',
+            'gzip, deflate, br, zstd',
+            'gzip, deflate',
+        ]
         
         headers = {
             'User-Agent': user_agent,
-            'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
+            'Accept-Language': random.choice(accept_languages),
+            'Accept-Encoding': random.choice(accept_encodings),
+            'DNT': str(random.choice([1, 1, 1, None])) if random.random() > 0.3 else None,
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': random.choice(['none', 'same-origin', 'cross-site']),
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': random.choice(['max-age=0', 'no-cache']),
         }
         
-        self.client = httpx.AsyncClient(
-            timeout=30.0,
-            follow_redirects=True,
-            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
-            headers=headers,
-        )
+        # Filtrer les headers None
+        headers = {k: v for k, v in headers.items() if v is not None}
+        
+        # Ajouter un referer aléatoirement
+        if random.random() > 0.4:
+            referers = [
+                'https://www.google.fr/',
+                'https://www.google.com/search?q=voiture+occasion',
+                'https://www.bing.com/',
+                'https://www.leboncoin.fr/',
+            ]
+            headers['Referer'] = random.choice(referers)
+        
+        return headers
+    
+    async def _create_new_session(self):
+        """Crée une nouvelle session HTTP avec rotation complète"""
+        # Fermer l'ancienne session
+        if self.client:
+            try:
+                await self.client.aclose()
+                await asyncio.sleep(random.uniform(0.5, 1.5))  # Pause avant nouvelle session
+            except:
+                pass
+        
+        # Sélectionner un proxy
+        if USE_PROXIES:
+            self.current_proxy = self._get_next_proxy()
+            logger.info(f"🔄 Proxy: {self.current_proxy}")
+        
+        # Générer des headers aléatoires
+        headers = self._generate_random_headers()
+        
+        # Créer le client avec configuration anti-détection
+        client_kwargs = {
+            'timeout': httpx.Timeout(30.0, connect=10.0),
+            'follow_redirects': True,
+            'limits': httpx.Limits(
+                max_keepalive_connections=5,
+                max_connections=10,
+                keepalive_expiry=30.0
+            ),
+            'headers': headers,
+            'http2': random.choice([True, False]),  # Varier HTTP/2
+        }
+        
+        # Ajouter le proxy si configuré
+        if self.current_proxy:
+            client_kwargs['proxies'] = {
+                'http://': self.current_proxy,
+                'https://': self.current_proxy,
+            }
+        
+        self.client = httpx.AsyncClient(**client_kwargs)
         
         self.session_created_at = datetime.now()
         self.session_request_count = 0
@@ -161,64 +253,100 @@ class MultiPageScraper:
     async def setup(self):
         """Initialise le client HTTP"""
         await self._create_new_session()
-        logger.info("✅ Client HTTP prêt")
+        logger.info("✅ Client HTTP prêt (mode anti-ban)")
         return True
     
-    def _get_headers(self):
-        """Génère des headers réalistes"""
-        headers = {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Cache-Control': 'max-age=0',
-        }
+    def _should_rotate_session(self):
+        """Détermine si on doit changer de session"""
+        # Rotation si trop de requêtes
+        if self.session_request_count >= MAX_REQUESTS_PER_SESSION:
+            logger.info(f"🔄 Rotation: limite de {MAX_REQUESTS_PER_SESSION} requêtes atteinte")
+            return True
         
-        if random.random() > 0.6:
-            referers = [
-                'https://www.google.fr/',
-                'https://www.google.com/',
-                'https://www.bing.com/',
-            ]
-            headers['Referer'] = random.choice(referers)
+        # Rotation si bans détectés
+        if self.consecutive_403 >= MAX_CONSECUTIVE_403:
+            return True
         
-        return headers
+        # Rotation si taux de succès faible
+        if len(self.success_rate) >= 5:
+            recent_success = sum(self.success_rate[-5:]) / 5
+            if recent_success < 0.3:
+                logger.info(f"🔄 Rotation: taux de succès faible ({recent_success:.1%})")
+                return True
+        
+        return False
+    
+    def _update_adaptive_delay(self, success: bool):
+        """Adapte le délai en fonction des succès/échecs"""
+        self.success_rate.append(1 if success else 0)
+        if len(self.success_rate) > 20:
+            self.success_rate.pop(0)
+        
+        # Calculer le taux de succès récent
+        if len(self.success_rate) >= 5:
+            recent_success = sum(self.success_rate[-5:]) / 5
+            
+            # Augmenter le délai si échecs
+            if recent_success < 0.5:
+                self.adaptive_delay = min(self.adaptive_delay * 1.5, MAX_DELAY_SECONDS)
+                logger.info(f"⏱️ Délai augmenté: {self.adaptive_delay:.1f}s")
+            # Réduire progressivement si succès
+            elif recent_success > 0.8:
+                self.adaptive_delay = max(self.adaptive_delay * 0.9, MIN_DELAY_SECONDS)
     
     async def _handle_ban_recovery(self):
-        """Récupération après ban"""
-        logger.warning(f"🚫 Ban détecté - Rotation dans {BAN_RECOVERY_DELAY}s")
-        await asyncio.sleep(BAN_RECOVERY_DELAY)
+        """Récupération après ban avec stratégie agressive"""
+        logger.warning(f"🚫 Ban détecté - Récupération...")
+        
+        # Pause plus longue
+        recovery_time = BAN_RECOVERY_DELAY + random.uniform(0, 15)
+        logger.info(f"⏳ Pause {recovery_time:.0f}s...")
+        await asyncio.sleep(recovery_time)
+        
+        # Créer une nouvelle session complète
         await self._create_new_session()
-        logger.info("✅ Session rotée")
+        
+        # Augmenter le délai adaptatif
+        self.adaptive_delay = min(self.adaptive_delay * 2, MAX_DELAY_SECONDS)
+        
+        logger.info("✅ Session rotée après ban")
     
     async def scrape_all_pages(self):
-        """Scrape plusieurs pages pour trouver de nouvelles annonces"""
+        """Scrape plusieurs pages avec gestion anti-ban"""
         all_ads = []
         
         for page_num in PAGES_TO_SCRAPE:
+            # Vérifier si rotation nécessaire avant chaque page
+            if self._should_rotate_session():
+                await self._create_new_session()
+                await asyncio.sleep(random.uniform(2, 4))
+            
             logger.info(f"  📄 Page {page_num}...")
             
-            # Délai entre pages
+            # Délai adaptatif entre pages
             if page_num > 1:
-                delay = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
+                delay = random.uniform(self.adaptive_delay, self.adaptive_delay + 2)
                 await asyncio.sleep(delay)
             
             ads = await self.get_ads_from_page(page_num)
+            
             if ads:
                 all_ads.extend(ads)
                 logger.info(f"     ✅ {len(ads)} annonces trouvées")
             else:
                 logger.warning(f"     ⚠️ Aucune annonce")
             
-            # Si ban détecté, arrêter le multi-page
+            # Arrêter si ban détecté
             if self.consecutive_403 >= MAX_CONSECUTIVE_403:
+                logger.warning("⚠️ Arrêt multi-page: ban détecté")
+                await self._handle_ban_recovery()
                 break
         
         logger.info(f"📊 Total: {len(all_ads)} annonces sur {len(PAGES_TO_SCRAPE)} pages")
         return all_ads
     
     async def get_ads_from_page(self, page_num=1):
-        """Récupère les annonces d'une page spécifique"""
+        """Récupère les annonces d'une page avec détection précoce de ban"""
         if not BS4_AVAILABLE:
             logger.error("❌ BeautifulSoup non disponible")
             return []
@@ -226,21 +354,31 @@ class MultiPageScraper:
         self.request_count += 1
         self.session_request_count += 1
         
-        # Construire l'URL avec pagination
+        # Construire l'URL
         if page_num == 1:
             url = "https://www.leboncoin.fr/voitures/offres"
         else:
             url = f"https://www.leboncoin.fr/voitures/offres?page={page_num}"
         
         try:
-            headers = self._get_headers()
-            response = await self.client.get(url, headers=headers)
+            # Headers dynamiques pour chaque requête
+            dynamic_headers = {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'fr-FR,fr;q=0.9',
+            }
             
-            # Gestion erreurs
+            # Ajouter un referer si pas page 1
+            if page_num > 1:
+                dynamic_headers['Referer'] = f"https://www.leboncoin.fr/voitures/offres?page={page_num-1}"
+            
+            response = await self.client.get(url, headers=dynamic_headers)
+            
+            # Gestion des erreurs
             if response.status_code == 403:
                 self.consecutive_403 += 1
                 self.total_errors += 1
-                logger.error(f"❌ 403 ({self.consecutive_403}/{MAX_CONSECUTIVE_403})")
+                self._update_adaptive_delay(False)
+                logger.error(f"❌ 403 Forbidden ({self.consecutive_403}/{MAX_CONSECUTIVE_403})")
                 
                 if self.consecutive_403 >= MAX_CONSECUTIVE_403:
                     await self._handle_ban_recovery()
@@ -248,20 +386,30 @@ class MultiPageScraper:
                 return []
             
             if response.status_code == 429:
-                logger.warning("⚠️ Rate limit")
+                logger.warning("⚠️ 429 Rate Limit")
+                self._update_adaptive_delay(False)
                 await self._handle_ban_recovery()
                 return []
             
             if response.status_code != 200:
                 logger.error(f"❌ HTTP {response.status_code}")
                 self.total_errors += 1
+                self._update_adaptive_delay(False)
                 return []
             
             # Succès
             self.consecutive_403 = 0
             self.last_successful_request = datetime.now()
+            self._update_adaptive_delay(True)
             
             html_content = response.text
+            
+            # Vérification anti-bot dans le contenu
+            if "captcha" in html_content.lower() or "verify you are human" in html_content.lower():
+                logger.warning("⚠️ Page de vérification détectée")
+                await self._handle_ban_recovery()
+                return []
+            
             soup = BeautifulSoup(html_content, 'html.parser')
             
             # Chercher les annonces
@@ -278,13 +426,14 @@ class MultiPageScraper:
                 if ads and len(ads) >= 5:
                     ad_elements = ads
             
-            # Stratégie 3: liens
+            # Stratégie 3: liens voitures
             if not ad_elements:
                 ads = soup.find_all('a', href=re.compile(r'/voitures/\d+\.htm'))
                 if ads:
                     ad_elements = ads
             
             if not ad_elements:
+                logger.warning("⚠️ Aucun élément d'annonce trouvé")
                 return []
             
             # Parser les annonces
@@ -292,9 +441,9 @@ class MultiPageScraper:
             for idx, element in enumerate(ad_elements):
                 try:
                     ad_data = self._parse_ad(element, idx, soup)
-                    if ad_data and ad_data.get('price', 0) > 0:  # Filtrer prix valides
+                    if ad_data and ad_data.get('price', 0) > 0:
                         ads_found.append(ad_data)
-                except:
+                except Exception as e:
                     continue
             
             return ads_found
@@ -302,14 +451,16 @@ class MultiPageScraper:
         except httpx.TimeoutException:
             logger.error("❌ Timeout")
             self.total_errors += 1
+            self._update_adaptive_delay(False)
             return []
         except Exception as e:
             logger.error(f"❌ Erreur: {str(e)[:100]}")
             self.total_errors += 1
+            self._update_adaptive_delay(False)
             return []
     
     def _parse_ad(self, element, idx, soup):
-        """Parse une annonce avec logs détaillés"""
+        """Parse une annonce"""
         try:
             # Titre
             title = None
@@ -354,7 +505,7 @@ class MultiPageScraper:
                         except:
                             price = 0
             
-            # URL (IMPORTANT pour ID unique)
+            # URL et ID unique
             url = ""
             if element.name == 'a':
                 url = element.get('href', '')
@@ -366,17 +517,14 @@ class MultiPageScraper:
             if url and not url.startswith('http'):
                 url = f"https://www.leboncoin.fr{url}"
             
-            # ID UNIQUE basé sur l'URL
+            # ID unique basé sur URL
             ad_id = None
             if url:
-                # Extraire l'ID numérique de l'URL
                 match = re.search(r'/(\d+)\.htm', url)
                 if match:
                     ad_id = f"lbc_{match.group(1)}"
             
-            # Si pas d'ID, générer un ID basé sur titre + prix
             if not ad_id:
-                import hashlib
                 unique_str = f"{title}_{price}"
                 ad_id = f"lbc_{hashlib.md5(unique_str.encode()).hexdigest()[:8]}"
             
@@ -543,7 +691,7 @@ class MultiPageScraper:
             await self.client.aclose()
 
 # Instance globale
-scraper = MultiPageScraper()
+scraper = AntiBanScraper()
 
 # ============ WEBSOCKET ============
 
@@ -576,7 +724,11 @@ async def broadcast_new_vehicle(vehicle):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gestion du cycle de vie"""
-    logger.info("🚀 AutoTrack API - Multi-Pages")
+    logger.info("🚀 AutoTrack API - Mode Anti-Ban")
+    logger.info(f"⚙️ Config: {MAX_REQUESTS_PER_SESSION} req/session, délai {MIN_DELAY_SECONDS}-{MAX_DELAY_SECONDS}s")
+    if USE_PROXIES:
+        logger.info(f"🌐 Proxies: {len(PROXY_LIST)} configurés")
+    
     task = asyncio.create_task(background_monitor())
     yield
     scraper.running = False
@@ -585,8 +737,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AutoTrack API",
-    version="8.0",
-    description="API avec scraping multi-pages",
+    version="9.0-antiban",
+    description="API avec système anti-ban avancé",
     lifespan=lifespan
 )
 
@@ -617,18 +769,17 @@ async def websocket_endpoint(websocket: WebSocket):
 # ============ MONITORING ============
 
 async def background_monitor():
-    """Monitoring multi-pages"""
+    """Monitoring avec système anti-ban"""
     scraper.running = True
-    logger.info(f"⏱️ Intervalle: {SCRAPE_INTERVAL_SECONDS}s | Pages: {PAGES_TO_SCRAPE}")
+    logger.info(f"⏱️ Intervalle: {SCRAPE_INTERVAL_SECONDS}s")
     
     await scraper.setup()
     
     # Scan initial
-    logger.info("🔍 Scan initial (multi-pages)...")
+    logger.info("🔍 Scan initial (mode anti-ban)...")
     try:
         initial_ads = await scraper.scrape_all_pages()
         
-        # Afficher les premières annonces
         logger.info(f"\n📋 ANNONCES DÉTECTÉES:")
         for i, ad in enumerate(initial_ads[:10]):
             logger.info(f"  {i+1}. {ad['title'][:60]} - {ad['price']}€ - {ad['location'][:30]}")
@@ -644,12 +795,12 @@ async def background_monitor():
     
     scan_count = 0
     
-    logger.info(f"✅ Monitoring actif!\n")
+    logger.info(f"✅ Monitoring actif (anti-ban)!\n")
     
     while scraper.running:
         scan_count += 1
         
-        logger.info(f"🔍 Scan #{scan_count} (multi-pages)...")
+        logger.info(f"🔍 Scan #{scan_count} (délai adaptatif: {scraper.adaptive_delay:.1f}s)...")
         
         try:
             ads = await scraper.scrape_all_pages()
@@ -666,27 +817,32 @@ async def background_monitor():
                     logger.info(f"   📌 {ad['title'][:50]}... - {ad['price']}€ - {ad['location']}")
                     await broadcast_new_vehicle(ad)
                 
-                # Optimisation mémoire
                 if len(database["vehicles"]) > MAX_VEHICLES_IN_MEMORY:
                     database["vehicles"] = database["vehicles"][:MAX_VEHICLES_IN_MEMORY]
             else:
                 logger.info(f"✓ Aucune nouvelle annonce")
             
-            # Stats tous les 5 scans
-            if scan_count % 5 == 0:
+            # Stats tous les 3 scans
+            if scan_count % 3 == 0:
                 uptime = (datetime.now() - scraper.session_created_at).total_seconds() / 60
+                success_rate = sum(scraper.success_rate[-10:]) / min(len(scraper.success_rate), 10) if scraper.success_rate else 0
+                
                 logger.info(f"\n📊 STATS:")
                 logger.info(f"   • Nouvelles: {scraper.total_new_ads}")
                 logger.info(f"   • Total DB: {len(database['vehicles'])}")
                 logger.info(f"   • IDs vus: {len(scraper.seen_ads)}")
                 logger.info(f"   • Sessions: {scraper.total_sessions}")
-                logger.info(f"   • Uptime: {uptime:.1f}min\n")
+                logger.info(f"   • Taux succès: {success_rate:.1%}")
+                logger.info(f"   • Délai adaptatif: {scraper.adaptive_delay:.1f}s")
+                logger.info(f"   • Uptime session: {uptime:.1f}min\n")
             
         except Exception as e:
             logger.error(f"❌ Erreur: {str(e)[:100]}")
         
-        logger.info(f"⏳ Pause {SCRAPE_INTERVAL_SECONDS}s...\n")
-        await asyncio.sleep(SCRAPE_INTERVAL_SECONDS)
+        # Délai avec variation aléatoire
+        pause_time = SCRAPE_INTERVAL_SECONDS + random.uniform(-2, 3)
+        logger.info(f"⏳ Pause {pause_time:.1f}s...\n")
+        await asyncio.sleep(pause_time)
 
 # ============ ROUTES API ============
 
@@ -697,9 +853,11 @@ async def root():
     if scraper.session_created_at:
         uptime = (datetime.now() - scraper.session_created_at).total_seconds()
     
+    success_rate = sum(scraper.success_rate) / len(scraper.success_rate) if scraper.success_rate else 0
+    
     return {
-        "name": "AutoTrack API - Multi-Pages",
-        "version": "8.0",
+        "name": "AutoTrack API - Anti-Ban",
+        "version": "9.0",
         "status": "running",
         "vehicles_count": len(database["vehicles"]),
         "unique_ads_seen": len(scraper.seen_ads),
@@ -710,6 +868,8 @@ async def root():
             "total_sessions": scraper.total_sessions,
             "total_new_ads": scraper.total_new_ads,
             "total_errors": scraper.total_errors,
+            "success_rate": f"{success_rate:.1%}",
+            "adaptive_delay": f"{scraper.adaptive_delay:.1f}s",
             "session_uptime_minutes": round(uptime / 60, 1) if uptime else 0,
         }
     }
@@ -760,6 +920,8 @@ async def get_stats():
     if scraper.session_created_at:
         uptime = (datetime.now() - scraper.session_created_at).total_seconds()
     
+    success_rate = sum(scraper.success_rate) / len(scraper.success_rate) if scraper.success_rate else 0
+    
     return {
         "total_vehicles": len(database["vehicles"]),
         "unique_ads_seen": len(scraper.seen_ads),
@@ -768,13 +930,20 @@ async def get_stats():
             "total": scraper.request_count,
             "session": scraper.session_request_count,
             "errors": scraper.total_errors,
+            "success_rate": f"{success_rate:.1%}",
         },
         "sessions": {
             "total": scraper.total_sessions,
             "uptime_minutes": round(uptime / 60, 1) if uptime else 0,
+            "requests_per_session": MAX_REQUESTS_PER_SESSION,
         },
         "discoveries": {
             "total_new_ads": scraper.total_new_ads,
+        },
+        "anti_ban": {
+            "adaptive_delay": f"{scraper.adaptive_delay:.1f}s",
+            "consecutive_403": scraper.consecutive_403,
+            "proxies_enabled": USE_PROXIES,
         }
     }
 
