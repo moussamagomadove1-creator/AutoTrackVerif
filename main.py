@@ -38,7 +38,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============ CONFIGURATION ============
-SCRAPE_INTERVAL_SECONDS = 30
+SCRAPE_INTERVAL_SECONDS = 5
 MAX_DELAY_SECONDS = 5
 MIN_DELAY_SECONDS = 2
 BAN_RECOVERY_DELAY = 30
