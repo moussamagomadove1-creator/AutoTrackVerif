@@ -32,43 +32,34 @@ try:
     from selenium.webdriver.support import expected_conditions as EC
     SELENIUM_AVAILABLE = True
 except ImportError:
+    uc = None  # évite l'erreur "name 'uc' is not defined"
     SELENIUM_AVAILABLE = False
-    print("❌ Selenium ou undetected_chromedriver non installé")
 
-def init_chrome(headless: bool = True):
+def init_chrome():
     """
     Initialise le navigateur Chrome avec undetected_chromedriver.
     Retourne le driver ou None si erreur.
     """
-    if not SELENIUM_AVAILABLE:
-        logging.error("Selenium ou undetected_chromedriver non installé")
+    if not SELENIUM_AVAILABLE or uc is None:
+        print("❌ Selenium ou undetected_chromedriver non installé")
         return None
 
     try:
         options = uc.ChromeOptions()
-        if headless:
-            options.add_argument("--headless=new")  # Mode headless moderne
+        options.add_argument("--headless=new")  # Chrome en mode headless
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-extensions")
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--window-size=1920,1080")
-        options.add_argument("--remote-debugging-port=9222")  # utile pour Docker
-
-        # Optionnel : choisir un user-agent aléatoire pour réduire le risque de blocage
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
-        ]
-        options.add_argument(f"user-agent={random.choice(user_agents)}")
 
         driver = uc.Chrome(options=options)
-        logging.info("✅ Chrome initialisé avec succès")
+        print("✅ Chrome initialisé avec succès")
         return driver
 
     except Exception as e:
-        logging.error(f"❌ Erreur init Chrome: {e}")
+        print(f"❌ Erreur init Chrome: {e}")
         return None
 
 # ----------------------- Agent log -----------------------
