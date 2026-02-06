@@ -6,7 +6,7 @@ CORRECTIONS APPLIQUÉES:
 - Filtre de recherche par ville avec rayon en km
 - Géolocalisation des villes françaises
 - Extraction optimisée des données
-- Mode headless activé pour optimisation ressources
+- Fonction init_chrome() personnalisée intégrée
 """
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -231,6 +231,27 @@ def get_city_coordinates(city: str) -> Optional[tuple]:
     
     return None
 
+# ============ FONCTION INIT CHROME PERSONNALISÉE ============
+
+def init_chrome():
+    """
+    Initialise Chrome avec undetected_chromedriver
+    Version personnalisée simplifiée
+    """
+    try:
+        options = uc.ChromeOptions()
+        options.add_argument("--headless=new")        # mode sans interface graphique
+        options.add_argument("--no-sandbox")          # pour Docker / serveur
+        options.add_argument("--disable-dev-shm-usage")  # empêche certains crashs
+        
+        # Initialise le driver Chrome
+        driver = uc.Chrome(options=options)
+        logger.info("✅ Chrome initialisé avec succès")
+        return driver
+    except Exception as e:
+        logger.error(f"❌ Erreur init Chrome: {e}")
+        return None
+
 # ============ SCRAPER AMÉLIORÉ ============
 
 class ImprovedLeBonCoinScraper:
@@ -244,74 +265,26 @@ class ImprovedLeBonCoinScraper:
         self.page_loaded = False  # Track si la page est déjà chargée
         self.cookies_accepted = False  # Track si les cookies sont acceptés
     
-    def get_chrome_version(self):
-        """Détecte la version de Chrome"""
-        try:
-            import winreg
-            try:
-                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon")
-                version, _ = winreg.QueryValueEx(key, "version")
-                major_version = version.split('.')[0]
-                return int(major_version)
-            except:
-                pass
-            
-            try:
-                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"Software\Google\Chrome\BLBeacon")
-                version, _ = winreg.QueryValueEx(key, "version")
-                major_version = version.split('.')[0]
-                return int(major_version)
-            except:
-                pass
-        except:
-            pass
-        
-        return None
-    
     def setup_driver(self):
-        """Configure le navigateur"""
+        """Configure le navigateur en utilisant init_chrome()"""
         if self.driver:
             return True
         
         logger.info("🚀 Initialisation du navigateur...")
         
-        try:
-            chrome_version = self.get_chrome_version()
-            
-            options = uc.ChromeOptions()
-            options.add_argument('--headless=new')  # ✅ Mode headless (sans interface graphique)
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--disable-blink-features=AutomationControlled')
-            options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-            options.add_argument('--window-size=1920,1080')
-            options.add_argument('--log-level=3')
-            options.add_argument('--silent')
-            
-            if chrome_version:
-                self.driver = uc.Chrome(
-                    options=options,
-                    version_main=chrome_version,
-                    use_subprocess=True,
-                    suppress_welcome=True
-                )
-            else:
-                self.driver = uc.Chrome(
-                    options=options,
-                    use_subprocess=True,
-                    suppress_welcome=True
-                )
-            
+        # Utiliser la fonction init_chrome() personnalisée
+        self.driver = init_chrome()
+        
+        if self.driver:
             try:
                 self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             except:
                 pass
             
-            logger.info("✅ Navigateur OK (mode headless)")
+            logger.info("✅ Navigateur OK")
             return True
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur init Chrome: {str(e)}")
+        else:
+            logger.error("❌ Échec initialisation Chrome")
             return False
     
     def human_delay(self, min_sec=2, max_sec=4):
@@ -1280,7 +1253,7 @@ async def root():
             "Recherche géolocalisée (rayon en km)",
             "WebSocket temps réel",
             "Monitoring automatique",
-            "Mode headless optimisé"
+            "init_chrome() personnalisée intégrée"
         ]
     }
 
@@ -1291,7 +1264,7 @@ async def get_vehicles(
     brand: Optional[str] = None,
     model: Optional[str] = None,
     location: Optional[str] = None,
-    location_radius_km: Optional[int] = None,  # NOUVEAU: rayon de recherche
+    location_radius_km: Optional[int] = None,
     min_price: Optional[int] = None,
     max_price: Optional[int] = None,
     min_year: Optional[int] = None,
@@ -1425,11 +1398,11 @@ async def get_vehicles(
         "last_updated": vehicles[0]["published_at"].isoformat() if vehicles else None,
         
         # ✅ NOUVEAUX CHAMPS pour éviter le chargement en boucle
-        "is_partial": is_partial,              # La page n'est pas complète (moins d'annonces que limit)
-        "has_more": has_more,                  # Il y a d'autres pages après celle-ci
-        "available_count": available_count,    # Nombre d'annonces réellement disponibles sur cette page
-        "waiting_for_more": False,             # Ne jamais attendre de nouvelles annonces
-        "is_empty": available_count == 0,      # La page est complètement vide
+        "is_partial": is_partial,
+        "has_more": has_more,
+        "available_count": available_count,
+        "waiting_for_more": False,
+        "is_empty": available_count == 0,
         
         "filters_applied": {
             "brand": brand,
