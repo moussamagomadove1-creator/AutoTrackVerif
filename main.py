@@ -44,7 +44,7 @@ MIN_DELAY_SECONDS = 2
 BAN_RECOVERY_DELAY = 30
 MAX_CONSECUTIVE_403 = 2
 MAX_VEHICLES_IN_MEMORY = 10000
-PAGES_TO_SCRAPE = [1, 2, 3]  # Scraper 3 pages
+PAGES_TO_SCRAPE = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]  # Scraper 10 pages
 
 # Base de données en mémoire
 database = {
