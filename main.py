@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 import json
 import math
 
-# Import Selenium
+# ----------------------- Selenium / Chrome -----------------------
 try:
     import undetected_chromedriver as uc
     from selenium.webdriver.common.by import By
@@ -34,9 +34,37 @@ try:
 except ImportError:
     SELENIUM_AVAILABLE = False
 
-# #region agent log
+def init_chrome():
+    """
+    Initialise le navigateur Chrome avec undetected_chromedriver.
+    Retourne le driver ou None si erreur.
+    """
+    if not SELENIUM_AVAILABLE:
+        print("❌ Selenium ou undetected_chromedriver non installé")
+        return None
+
+    try:
+        options = uc.ChromeOptions()
+        options.add_argument("--headless=new")  # Chrome en mode headless
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--window-size=1920,1080")
+
+        driver = uc.Chrome(options=options)
+        print("✅ Chrome initialisé avec succès")
+        return driver
+
+    except Exception as e:
+        print(f"❌ Erreur init Chrome: {e}")
+        return None
+
+# ----------------------- Agent log -----------------------
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 DEBUG_LOG_PATH = os.path.join(os.path.dirname(_script_dir), ".cursor", "debug.log")
+
 def _debug_log(message, data=None, hypothesis_id=None):
     try:
         import json as _j
@@ -44,12 +72,18 @@ def _debug_log(message, data=None, hypothesis_id=None):
         if _dir:
             os.makedirs(_dir, exist_ok=True)
         with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as _f:
-            _f.write(_j.dumps({"timestamp": __import__("time").time()*1000, "location": "main.py", "message": message, "data": data or {}, "sessionId": "debug-session", "hypothesisId": hypothesis_id or "E"}, ensure_ascii=False) + "\n")
+            _f.write(_j.dumps({
+                "timestamp": __import__("time").time() * 1000,
+                "location": "main.py",
+                "message": message,
+                "data": data or {},
+                "sessionId": "debug-session",
+                "hypothesisId": hypothesis_id or "E"
+            }, ensure_ascii=False) + "\n")
     except Exception:
         pass
-# #endregion
 
-# ============ LOGGING ============
+# ----------------------- Logging -----------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -57,7 +91,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============ CONFIGURATION ============
+# ----------------------- Configuration -----------------------
 SCRAPE_INTERVAL_SECONDS = 5  # 5 secondes - Monitoring ultra-rapide et réactif
 SCRAPE_URL = "https://www.leboncoin.fr/voitures/offres"
 
@@ -72,10 +106,10 @@ database = {
 # Liste des clients WebSocket connectés
 websocket_clients = []
 
-# ============ ANTI-BAN SYSTEM ============
-# Compteur de scans consécutifs avec 0 annonce
+# ----------------------- Anti-ban system -----------------------
 consecutive_empty_scans = 0
 MAX_EMPTY_SCANS_BEFORE_REFRESH = 10  # Ouvrir une nouvelle page après 10 scans vides
+
 
 # ============ GÉOLOCALISATION DES VILLES ============
 
